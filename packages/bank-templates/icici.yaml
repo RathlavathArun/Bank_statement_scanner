@@ -1,0 +1,35 @@
+bank_code: "ICICI"
+bank_name: "ICICI Bank"
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "ICICI Bank Limited"
+    - "Statement of Transactions"
+  regex:
+    - "IFSC\\s*:\\s*ICIC000[0-9]{4}"
+
+extraction:
+  skip_headers: 1
+  headers:
+    - "S No."
+    - "Value Date"
+    - "Transaction Date"
+    - "Cheque Number"
+    - "Transaction Remarks"
+    - "Withdrawal Amount (INR )"
+    - "Deposit Amount (INR )"
+    - "Balance (INR )"
+  
+  columns:
+    date: 2
+    narration: 4
+    reference: 3
+    value_date: 1
+    debit: 5
+    credit: 6
+    balance: 7
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"
