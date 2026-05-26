@@ -1,111 +1,187 @@
-import os
 import shutil
-import time
-from fastapi import APIRouter, UploadFile, File, Form
+from decimal import Decimal
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from db.database import get_db
+from db.models import Client, Firm, Statement, Transaction
+from statements.parser import StatementParserError, parse_statement
 
 router = APIRouter(prefix="/v1/statements", tags=["statements"])
 
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-statement_status = {}
+DEFAULT_FIRM_NAME = "Default Firm"
+DEFAULT_CLIENT_NAME = "Default Client"
+
+
+def file_type_for(filename: str) -> str:
+    suffix = Path(filename).suffix.lower().lstrip(".")
+    if suffix in {"pdf", "csv", "xlsx", "xls"}:
+        return suffix
+    if suffix in {"jpg", "jpeg", "png", "webp"}:
+        return "image"
+    return suffix or "unknown"
+
+
+def money(value: Decimal | None) -> str | None:
+    return str(value) if value is not None else None
+
+
+async def get_or_create_default_client(db: AsyncSession) -> Client:
+    result = await db.execute(select(Client).where(Client.name == DEFAULT_CLIENT_NAME))
+    client = result.scalar_one_or_none()
+    if client:
+        return client
+
+    firm = Firm(name=DEFAULT_FIRM_NAME)
+    db.add(firm)
+    await db.flush()
+
+    client = Client(firm_id=firm.id, name=DEFAULT_CLIENT_NAME)
+    db.add(client)
+    await db.flush()
+
+    return client
+
+
+def serialize_statement(statement: Statement) -> dict:
+    return {
+        "id": statement.id,
+        "filename": statement.metadata_.get("original_filename"),
+        "bank": statement.bank_code,
+        "status": statement.status,
+        "path": statement.file_url,
+        "error": statement.error_message,
+    }
+
+
+def serialize_transaction(transaction: Transaction) -> dict:
+    return {
+        "id": transaction.id,
+        "date": transaction.txn_date.isoformat(),
+        "value_date": transaction.value_date.isoformat() if transaction.value_date else None,
+        "description": transaction.narration,
+        "reference_no": transaction.reference_no,
+        "debit": money(transaction.debit),
+        "credit": money(transaction.credit),
+        "balance": money(transaction.balance),
+    }
+
 
 @router.post("/upload")
 async def upload_statement(
     file: UploadFile = File(...),
     bank: str | None = Form(default=None),
+    db: AsyncSession = Depends(get_db),
 ):
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    original_filename = file.filename or "statement"
+    client = await get_or_create_default_client(db)
 
-    with open(file_path, "wb") as buffer:
+    statement = Statement(
+        client_id=client.id,
+        file_url="",
+        file_type=file_type_for(original_filename),
+        bank_code=bank,
+        status="UPLOADED",
+        metadata_={"original_filename": original_filename},
+    )
+    db.add(statement)
+    await db.flush()
+
+    safe_filename = Path(original_filename).name
+    file_path = UPLOAD_DIR / f"{statement.id}-{safe_filename}"
+    statement.file_url = str(file_path)
+
+    with file_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    statement_status[file.filename] = {
-        "status": "UPLOADED",
-        "uploaded_at": time.time(),
-        "bank": bank,
-    }
+    statement.status = "PARSING"
+    try:
+        parsed = parse_statement(file_path, bank)
+    except StatementParserError as exc:
+        statement.status = "FAILED"
+        statement.error_message = str(exc)
+    else:
+        statement.metadata_ = {
+            **statement.metadata_,
+            **parsed.metadata,
+        }
+        statement.status = "READY_FOR_REVIEW"
+        db.add_all(
+            [
+                Transaction(
+                    statement_id=statement.id,
+                    row_number=txn.row_number,
+                    txn_date=txn.txn_date,
+                    value_date=txn.value_date,
+                    narration=txn.narration,
+                    reference_no=txn.reference_no,
+                    debit=txn.debit,
+                    credit=txn.credit,
+                    balance=txn.balance,
+                )
+                for txn in parsed.transactions
+            ]
+        )
+    await db.flush()
 
     return {
         "success": True,
         "message": "Statement uploaded successfully",
-        "data": {
-            "filename": file.filename,
-            "bank": bank,
-            "status": "UPLOADED",
-            "path": file_path,
-        },
+        "data": serialize_statement(statement),
     }
 
-@router.get("/{filename}/status")
-async def get_statement_status(filename: str):
-    file_path = os.path.join(UPLOAD_DIR, filename)
 
-    if not os.path.exists(file_path):
-        return {
-            "success": False,
-            "message": "Statement not found",
-            "data": None,
-        }
+@router.get("/{statement_id}/status")
+async def get_statement_status(
+    statement_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    statement = await db.get(Statement, statement_id)
 
-    record = statement_status.get(filename)
-
-    if not record:
-        status = "UPLOADED"
-        bank = None
-    else:
-        elapsed = time.time() - record["uploaded_at"]
-
-        if elapsed < 3:
-            status = "UPLOADED"
-        elif elapsed < 8:
-            status = "PARSING"
-        else:
-            status = "READY_FOR_REVIEW"
-
-        record["status"] = status
-        bank = record["bank"]
+    if not statement:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Statement not found",
+        )
 
     return {
         "success": True,
         "message": "Statement status fetched successfully",
-        "data": {
-            "filename": filename,
-            "status": status,
-            "bank": bank,
-        },
+        "data": serialize_statement(statement),
     }
-@router.get("/{filename}/result")
-async def get_statement_result(filename: str):
-    file_path = os.path.join(UPLOAD_DIR, filename)
 
-    if not os.path.exists(file_path):
-        return {
-            "success": False,
-            "message": "Statement not found",
-            "data": None,
-        }
+
+@router.get("/{statement_id}/result")
+async def get_statement_result(
+    statement_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    statement = await db.get(Statement, statement_id)
+
+    if not statement:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Statement not found",
+        )
+
+    result = await db.execute(
+        select(Transaction)
+        .where(Transaction.statement_id == statement_id)
+        .order_by(Transaction.row_number)
+    )
+    transactions = result.scalars().all()
 
     return {
         "success": True,
         "message": "Statement parsed successfully",
         "data": {
-            "filename": filename,
-            "transactions": [
-                {
-                    "date": "2026-05-01",
-                    "description": "UPI Payment to Vendor",
-                    "debit": 1200,
-                    "credit": 0,
-                    "balance": 48800,
-                },
-                {
-                    "date": "2026-05-03",
-                    "description": "NEFT Received",
-                    "debit": 0,
-                    "credit": 10000,
-                    "balance": 58800,
-                },
-            ],
+            **serialize_statement(statement),
+            "transactions": [serialize_transaction(txn) for txn in transactions],
         },
     }

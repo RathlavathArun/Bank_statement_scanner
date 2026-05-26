@@ -1,25 +1,63 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Dispatch, RefObject, SetStateAction, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
+type DashboardUser = {
+  full_name?: string | null;
+  firm?: {
+    name?: string | null;
+  } | null;
+};
+
+type StatementSummary = {
+  id: string;
+  filename: string;
+  bank: string;
+  status: string;
+};
+
+type ExtractedTransaction = {
+  id?: string;
+  date: string;
+  description: string;
+  debit?: string | null;
+  credit?: string | null;
+  balance?: string | null;
+};
+
+type UploadControlsProps = {
+  fileInputRef: RefObject<HTMLInputElement | null>;
+  file: File | null;
+  bank: string | null;
+  status: string;
+  progress: number;
+  setFile: Dispatch<SetStateAction<File | null>>;
+  setBank: Dispatch<SetStateAction<string | null>>;
+  setStatus: Dispatch<SetStateAction<string>>;
+  setProgress: Dispatch<SetStateAction<number>>;
+  handleUpload: () => Promise<void>;
+  error: string | null;
+};
+
 export default function DashboardPage() {
   const router = useRouter();
 
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<DashboardUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [file, setFile] = useState<File | null>(null);
   const [bank, setBank] = useState<string | null>(null);
   const [status, setStatus] = useState("idle");
   const [progress, setProgress] = useState(0);
-  const [uploadedFilename, setUploadedFilename] = useState<string | null>(null);
-  const [statements, setStatements] = useState<any[]>([]);
+  const [uploadedStatementId, setUploadedStatementId] = useState<string | null>(null);
+  const [statements, setStatements] = useState<StatementSummary[]>([]);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [transactions, setTransactions] = useState<any[]>([]);
+  const [transactions, setTransactions] = useState<ExtractedTransaction[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const token = localStorage.getItem("access_token");
@@ -55,11 +93,20 @@ export default function DashboardPage() {
     fetchUser();
   }, [router]);
 
-  const checkStatus = async () => {
-    if (!uploadedFilename) return;
+  const fetchResult = useCallback(async (statementId: string) => {
+    const res = await fetch(`http://localhost:8000/v1/statements/${statementId}/result`);
+    const data = await res.json();
+
+    if (data.success) {
+      setTransactions(data.data.transactions);
+    }
+  }, []);
+
+  const checkStatus = useCallback(async () => {
+    if (!uploadedStatementId) return;
 
     const res = await fetch(
-      `http://localhost:8000/v1/statements/${uploadedFilename}/status`
+      `http://localhost:8000/v1/statements/${uploadedStatementId}/status`
     );
 
     const data = await res.json();
@@ -69,34 +116,28 @@ export default function DashboardPage() {
 
       setStatements((prev) =>
         prev.map((stmt) =>
-          stmt.filename === data.data.filename
+          stmt.id === data.data.id
             ? { ...stmt, status: data.data.status }
             : stmt
         )
       );
       if (data.data.status === "READY_FOR_REVIEW") {
-        fetchResult(data.data.filename);
+        fetchResult(data.data.id);
       }
     }
-  };
-  const fetchResult = async (filename: string) => {
-    const res = await fetch(`http://localhost:8000/v1/statements/${filename}/result`);
-    const data = await res.json();
-  
-    if (data.success) {
-      setTransactions(data.data.transactions);
-    }
-  };
+  }, [fetchResult, uploadedStatementId]);
+
   useEffect(() => {
-    if (!uploadedFilename) return;
+    if (!uploadedStatementId) return;
     if (status === "READY_FOR_REVIEW") return;
+    if (status === "FAILED") return;
 
     const interval = setInterval(() => {
       checkStatus();
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [uploadedFilename, status]);
+  }, [checkStatus, uploadedStatementId, status]);
 
   const handleLogout = () => {
     localStorage.removeItem("access_token");
@@ -104,6 +145,7 @@ export default function DashboardPage() {
   };
 
   const handleUpload = async () => {
+    setError(null);
     if (!file) return;
 
     const formData = new FormData();
@@ -129,11 +171,12 @@ export default function DashboardPage() {
       }
 
       setProgress(100);
-      setStatus("uploaded");
-      setUploadedFilename(data.data.filename);
+      setStatus(data.data.status);
+      setUploadedStatementId(data.data.id);
 
       setStatements((prev) => [
         {
+          id: data.data.id,
           filename: data.data.filename,
           bank: data.data.bank || bank || "Unknown",
           status: data.data.status,
@@ -142,9 +185,13 @@ export default function DashboardPage() {
       ]);
 
       setFile(null);
+      if (data.data.status === "READY_FOR_REVIEW") {
+        fetchResult(data.data.id);
+      }
     } catch (err) {
       console.error(err);
       setStatus("failed");
+      setError("Upload failed. Please try again.");
     }
   };
 
@@ -194,7 +241,7 @@ export default function DashboardPage() {
               Welcome back, {user?.full_name?.split(" ")[0] || "User"}
             </h1>
             <p className="text-slate-500 dark:text-slate-400 mt-1">
-              Here's an overview of your firm's activity
+              Here&apos;s an overview of your firm&apos;s activity
             </p>
           </div>
 
@@ -234,34 +281,6 @@ export default function DashboardPage() {
               </p>
             </CardContent>
           </Card>
-          {transactions.length > 0 && (
-            <Card className="glass-card mt-6 p-4">
-              <h2 className="text-xl font-semibold mb-4 text-slate-800 dark:text-slate-200">
-                Extracted Transactions
-              </h2>
-
-              <div className="grid grid-cols-5 text-sm font-semibold text-slate-500 border-b pb-2">
-                <span>Date</span>
-                <span>Description</span>
-                <span>Debit</span>
-                <span>Credit</span>
-                <span>Balance</span>
-              </div>
-
-              {transactions.map((txn, index) => (
-                <div
-                  key={index}
-                  className="grid grid-cols-5 text-sm py-3 border-b last:border-b-0 text-slate-700 dark:text-slate-300"
-                >
-                  <span>{txn.date}</span>
-                  <span>{txn.description}</span>
-                  <span>{txn.debit}</span>
-                  <span>{txn.credit}</span>
-                  <span>{txn.balance}</span>
-                </div>
-              ))}
-            </Card>
-          )}
 
           <Card className="glass-card">
             <CardHeader className="pb-2">
@@ -322,6 +341,7 @@ export default function DashboardPage() {
                   setStatus={setStatus}
                   setProgress={setProgress}
                   handleUpload={handleUpload}
+                  error={error}
                 />
               </div>
             ) : (
@@ -334,7 +354,7 @@ export default function DashboardPage() {
 
                 {statements.map((stmt) => (
                   <div
-                    key={stmt.filename}
+                    key={stmt.id}
                     className="grid grid-cols-3 text-sm py-3 border-b last:border-b-0 text-slate-700 dark:text-slate-300"
                   >
                     <span className="truncate pr-4">{stmt.filename}</span>
@@ -355,12 +375,42 @@ export default function DashboardPage() {
                     setStatus={setStatus}
                     setProgress={setProgress}
                     handleUpload={handleUpload}
+                    error={error}
                   />
                 </div>
               </div>
             )}
           </div>
         </Card>
+
+        {transactions.length > 0 && (
+          <Card className="glass-card mt-6 p-4">
+            <h2 className="text-xl font-semibold mb-4 text-slate-800 dark:text-slate-200">
+              Extracted Transactions
+            </h2>
+
+            <div className="grid grid-cols-5 text-sm font-semibold text-slate-500 border-b pb-2">
+              <span>Date</span>
+              <span>Description</span>
+              <span>Debit</span>
+              <span>Credit</span>
+              <span>Balance</span>
+            </div>
+
+            {transactions.map((txn, index) => (
+              <div
+                key={txn.id || index}
+                className="grid grid-cols-5 text-sm py-3 border-b last:border-b-0 text-slate-700 dark:text-slate-300"
+              >
+                <span>{txn.date}</span>
+                <span>{txn.description}</span>
+                <span>{txn.debit || "-"}</span>
+                <span>{txn.credit || "-"}</span>
+                <span>{txn.balance || "-"}</span>
+              </div>
+            ))}
+          </Card>
+        )}
       </main>
     </div>
   );
@@ -377,7 +427,8 @@ function UploadControls({
   setStatus,
   setProgress,
   handleUpload,
-}: any) {
+  error,
+}: UploadControlsProps) {
   return (
     <div className="space-y-4">
       <input
@@ -420,6 +471,8 @@ function UploadControls({
           Status: {status} {progress > 0 && `(${progress}%)`}
         </p>
       )}
+
+      {error && <p className="text-sm text-red-600">{error}</p>}
 
       <Button
         variant="outline"
