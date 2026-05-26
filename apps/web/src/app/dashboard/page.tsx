@@ -1,19 +1,67 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Dispatch, RefObject, SetStateAction, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
+type DashboardUser = {
+  full_name?: string | null;
+  firm?: {
+    name?: string | null;
+  } | null;
+};
+
+type StatementSummary = {
+  id: string;
+  filename: string;
+  bank: string;
+  status: string;
+};
+
+type ExtractedTransaction = {
+  id?: string;
+  date: string;
+  description: string;
+  debit?: string | null;
+  credit?: string | null;
+  balance?: string | null;
+};
+
+type UploadControlsProps = {
+  fileInputRef: RefObject<HTMLInputElement | null>;
+  file: File | null;
+  bank: string | null;
+  status: string;
+  progress: number;
+  setFile: Dispatch<SetStateAction<File | null>>;
+  setBank: Dispatch<SetStateAction<string | null>>;
+  setStatus: Dispatch<SetStateAction<string>>;
+  setProgress: Dispatch<SetStateAction<number>>;
+  handleUpload: () => Promise<void>;
+  error: string | null;
+};
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [user, setUser] = useState<any>(null);
+
+  const [user, setUser] = useState<DashboardUser | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const [file, setFile] = useState<File | null>(null);
+  const [bank, setBank] = useState<string | null>(null);
+  const [status, setStatus] = useState("idle");
+  const [progress, setProgress] = useState(0);
+  const [uploadedStatementId, setUploadedStatementId] = useState<string | null>(null);
+  const [statements, setStatements] = useState<StatementSummary[]>([]);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [transactions, setTransactions] = useState<ExtractedTransaction[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const token = localStorage.getItem("access_token");
+
     if (!token) {
       router.push("/login");
       return;
@@ -23,11 +71,12 @@ export default function DashboardPage() {
       try {
         const res = await fetch("http://localhost:8000/v1/auth/me", {
           headers: {
-            "Authorization": `Bearer ${token}`
-          }
+            Authorization: `Bearer ${token}`,
+          },
         });
+
         const data = await res.json();
-        
+
         if (data.success) {
           setUser(data.data.user);
         } else {
@@ -44,9 +93,106 @@ export default function DashboardPage() {
     fetchUser();
   }, [router]);
 
+  const fetchResult = useCallback(async (statementId: string) => {
+    const res = await fetch(`http://localhost:8000/v1/statements/${statementId}/result`);
+    const data = await res.json();
+
+    if (data.success) {
+      setTransactions(data.data.transactions);
+    }
+  }, []);
+
+  const checkStatus = useCallback(async () => {
+    if (!uploadedStatementId) return;
+
+    const res = await fetch(
+      `http://localhost:8000/v1/statements/${uploadedStatementId}/status`
+    );
+
+    const data = await res.json();
+
+    if (data.success) {
+      setStatus(data.data.status);
+
+      setStatements((prev) =>
+        prev.map((stmt) =>
+          stmt.id === data.data.id
+            ? { ...stmt, status: data.data.status }
+            : stmt
+        )
+      );
+      if (data.data.status === "READY_FOR_REVIEW") {
+        fetchResult(data.data.id);
+      }
+    }
+  }, [fetchResult, uploadedStatementId]);
+
+  useEffect(() => {
+    if (!uploadedStatementId) return;
+    if (status === "READY_FOR_REVIEW") return;
+    if (status === "FAILED") return;
+
+    const interval = setInterval(() => {
+      checkStatus();
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [checkStatus, uploadedStatementId, status]);
+
   const handleLogout = () => {
     localStorage.removeItem("access_token");
     router.push("/login");
+  };
+
+  const handleUpload = async () => {
+    setError(null);
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    if (bank) {
+      formData.append("bank", bank);
+    }
+
+    try {
+      setStatus("uploading");
+      setProgress(30);
+
+      const res = await fetch("http://localhost:8000/v1/statements/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || "Upload failed");
+      }
+
+      setProgress(100);
+      setStatus(data.data.status);
+      setUploadedStatementId(data.data.id);
+
+      setStatements((prev) => [
+        {
+          id: data.data.id,
+          filename: data.data.filename,
+          bank: data.data.bank || bank || "Unknown",
+          status: data.data.status,
+        },
+        ...prev,
+      ]);
+
+      setFile(null);
+      if (data.data.status === "READY_FOR_REVIEW") {
+        fetchResult(data.data.id);
+      }
+    } catch (err) {
+      console.error(err);
+      setStatus("failed");
+      setError("Upload failed. Please try again.");
+    }
   };
 
   if (loading) {
@@ -59,11 +205,9 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen relative overflow-hidden bg-slate-50 dark:bg-slate-950">
-      {/* Mesh background */}
       <div className="absolute top-0 right-0 w-[800px] h-[800px] bg-blue-400/20 rounded-full mix-blend-multiply filter blur-[120px] opacity-70 animate-blob pointer-events-none"></div>
       <div className="absolute top-1/4 left-0 w-[600px] h-[600px] bg-purple-400/20 rounded-full mix-blend-multiply filter blur-[120px] opacity-70 animate-blob animation-delay-2000 pointer-events-none"></div>
 
-      {/* Navbar */}
       <header className="sticky top-0 z-50 w-full glass border-b border-white/20 dark:border-slate-800/50">
         <div className="container mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -74,11 +218,16 @@ export default function DashboardPage() {
               Bank Extract
             </span>
           </div>
+
           <div className="flex items-center gap-4">
             <span className="text-sm font-medium text-slate-600 dark:text-slate-300">
               {user?.firm?.name || "My Firm"}
             </span>
-            <Button variant="outline" onClick={handleLogout} className="glass-input h-9 text-sm">
+            <Button
+              variant="outline"
+              onClick={handleLogout}
+              className="glass-input h-9 text-sm"
+            >
               Log out
             </Button>
           </div>
@@ -92,10 +241,14 @@ export default function DashboardPage() {
               Welcome back, {user?.full_name?.split(" ")[0] || "User"}
             </h1>
             <p className="text-slate-500 dark:text-slate-400 mt-1">
-              Here's an overview of your firm's activity
+              Here&apos;s an overview of your firm&apos;s activity
             </p>
           </div>
-          <Button className="bg-blue-600 hover:bg-blue-700 text-white shadow-md transition-all">
+
+          <Button
+            className="bg-blue-600 hover:bg-blue-700 text-white shadow-md transition-all"
+            onClick={() => fileInputRef.current?.click()}
+          >
             + Upload Statement
           </Button>
         </div>
@@ -103,55 +256,232 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <Card className="glass-card">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500 dark:text-slate-400">Total Clients</CardTitle>
+              <CardTitle className="text-sm font-medium text-slate-500 dark:text-slate-400">
+                Total Clients
+              </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold">12</div>
-              <p className="text-xs text-emerald-500 font-medium mt-1">+2 this month</p>
+              <p className="text-xs text-emerald-500 font-medium mt-1">
+                +2 this month
+              </p>
             </CardContent>
           </Card>
+
           <Card className="glass-card">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500 dark:text-slate-400">Statements Processed</CardTitle>
+              <CardTitle className="text-sm font-medium text-slate-500 dark:text-slate-400">
+                Statements Processed
+              </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold">48</div>
-              <p className="text-xs text-emerald-500 font-medium mt-1">+14 this week</p>
+              <p className="text-xs text-emerald-500 font-medium mt-1">
+                +14 this week
+              </p>
             </CardContent>
           </Card>
+
           <Card className="glass-card">
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-slate-500 dark:text-slate-400">Auto-Categorization Rate</CardTitle>
+              <CardTitle className="text-sm font-medium text-slate-500 dark:text-slate-400">
+                Auto-Categorization Rate
+              </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold">87%</div>
-              <p className="text-xs text-blue-500 font-medium mt-1">Learning from your edits</p>
+              <p className="text-xs text-blue-500 font-medium mt-1">
+                Learning from your edits
+              </p>
             </CardContent>
           </Card>
         </div>
 
-        <h2 className="text-xl font-semibold mb-4 text-slate-800 dark:text-slate-200">Recent Statements</h2>
-        
-        <Card className="glass-card overflow-hidden">
+        <h2 className="text-xl font-semibold mb-4 text-slate-800 dark:text-slate-200">
+          Recent Statements
+        </h2>
+
+        <Card id="upload-section" className="glass-card overflow-hidden">
           <div className="divide-y divide-white/20 dark:divide-slate-800/50">
-            {/* Empty state for Phase 0 */}
-            <div className="p-8 text-center">
-              <div className="h-16 w-16 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-4">
-                <svg className="w-8 h-8 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
+            {statements.length === 0 ? (
+              <div className="p-8 text-center">
+                <div className="h-16 w-16 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <svg
+                    className="w-8 h-8 text-slate-400"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                    />
+                  </svg>
+                </div>
+
+                <h3 className="text-lg font-medium text-slate-900 dark:text-slate-100 mb-1">
+                  No statements yet
+                </h3>
+
+                <p className="text-slate-500 dark:text-slate-400 max-w-sm mx-auto mb-4">
+                  Upload your first bank statement to get started with
+                  auto-extraction.
+                </p>
+
+                <UploadControls
+                  fileInputRef={fileInputRef}
+                  file={file}
+                  bank={bank}
+                  status={status}
+                  progress={progress}
+                  setFile={setFile}
+                  setBank={setBank}
+                  setStatus={setStatus}
+                  setProgress={setProgress}
+                  handleUpload={handleUpload}
+                  error={error}
+                />
               </div>
-              <h3 className="text-lg font-medium text-slate-900 dark:text-slate-100 mb-1">No statements yet</h3>
-              <p className="text-slate-500 dark:text-slate-400 max-w-sm mx-auto mb-4">
-                Upload your first bank statement (PDF or Excel) to get started with auto-extraction.
-              </p>
-              <Button variant="outline" className="glass-input">
-                Upload Statement
-              </Button>
-            </div>
+            ) : (
+              <div className="p-4">
+                <div className="grid grid-cols-3 text-sm font-semibold text-slate-500 border-b pb-2">
+                  <span>Filename</span>
+                  <span>Bank</span>
+                  <span>Status</span>
+                </div>
+
+                {statements.map((stmt) => (
+                  <div
+                    key={stmt.id}
+                    className="grid grid-cols-3 text-sm py-3 border-b last:border-b-0 text-slate-700 dark:text-slate-300"
+                  >
+                    <span className="truncate pr-4">{stmt.filename}</span>
+                    <span>{stmt.bank}</span>
+                    <span>{stmt.status}</span>
+                  </div>
+                ))}
+
+                <div className="pt-4">
+                  <UploadControls
+                    fileInputRef={fileInputRef}
+                    file={file}
+                    bank={bank}
+                    status={status}
+                    progress={progress}
+                    setFile={setFile}
+                    setBank={setBank}
+                    setStatus={setStatus}
+                    setProgress={setProgress}
+                    handleUpload={handleUpload}
+                    error={error}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </Card>
+
+        {transactions.length > 0 && (
+          <Card className="glass-card mt-6 p-4">
+            <h2 className="text-xl font-semibold mb-4 text-slate-800 dark:text-slate-200">
+              Extracted Transactions
+            </h2>
+
+            <div className="grid grid-cols-5 text-sm font-semibold text-slate-500 border-b pb-2">
+              <span>Date</span>
+              <span>Description</span>
+              <span>Debit</span>
+              <span>Credit</span>
+              <span>Balance</span>
+            </div>
+
+            {transactions.map((txn, index) => (
+              <div
+                key={txn.id || index}
+                className="grid grid-cols-5 text-sm py-3 border-b last:border-b-0 text-slate-700 dark:text-slate-300"
+              >
+                <span>{txn.date}</span>
+                <span>{txn.description}</span>
+                <span>{txn.debit || "-"}</span>
+                <span>{txn.credit || "-"}</span>
+                <span>{txn.balance || "-"}</span>
+              </div>
+            ))}
+          </Card>
+        )}
       </main>
+    </div>
+  );
+}
+
+function UploadControls({
+  fileInputRef,
+  file,
+  bank,
+  status,
+  progress,
+  setFile,
+  setBank,
+  setStatus,
+  setProgress,
+  handleUpload,
+  error,
+}: UploadControlsProps) {
+  return (
+    <div className="space-y-4">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".pdf,.csv,.xlsx,.xls,image/*"
+        onChange={(e) => {
+          const selected = e.target.files?.[0] || null;
+          setFile(selected);
+          setStatus(selected ? "selected" : "idle");
+          setProgress(0);
+        }}
+        className="block w-full text-sm text-slate-500"
+      />
+
+      {file && (
+        <p className="text-sm text-slate-600 dark:text-slate-300">
+          Selected: {file.name}
+        </p>
+      )}
+
+      <div className="flex justify-center gap-2">
+        {["HDFC", "ICICI", "SBI"].map((b) => (
+          <button
+            key={b}
+            onClick={() => setBank(b)}
+            className={`rounded-full px-3 py-1 border text-sm ${
+              bank === b
+                ? "bg-blue-600 text-white border-blue-600"
+                : "border-slate-300 text-slate-600 dark:text-slate-300"
+            }`}
+          >
+            {b}
+          </button>
+        ))}
+      </div>
+
+      {status !== "idle" && (
+        <p className="text-sm text-slate-500">
+          Status: {status} {progress > 0 && `(${progress}%)`}
+        </p>
+      )}
+
+      {error && <p className="text-sm text-red-600">{error}</p>}
+
+      <Button
+        variant="outline"
+        className="glass-input"
+        disabled={!file}
+        onClick={handleUpload}
+      >
+        Upload Statement
+      </Button>
     </div>
   );
 }
