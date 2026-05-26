@@ -5,6 +5,7 @@ Main entry point. Wires up routes, middleware, and lifecycle events.
 import sys
 import os
 
+
 # Ensure the api directory is in the Python path
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -15,6 +16,7 @@ from core.config import settings
 from core.response import ApiResponse
 from db.database import init_db
 from auth.router import router as auth_router
+from statements.router import router as statements_router
 
 
 @asynccontextmanager
@@ -35,7 +37,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
-
+app.include_router(statements_router)
 # ─── CORS Middleware ─────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
