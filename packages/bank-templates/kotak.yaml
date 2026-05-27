@@ -1,0 +1,32 @@
+bank_code: "KOTAK"
+bank_name: "Kotak Mahindra Bank"
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Kotak Mahindra Bank"
+    - "Statement of Account"
+  regex:
+    - "IFSC\\s*:\\s*KKBK000[0-9]{4}"
+
+extraction:
+  skip_headers: 1
+  headers:
+    - "Date"
+    - "Description"
+    - "Chq/Ref No."
+    - "Amount (Dr)"
+    - "Amount (Cr)"
+    - "Balance"
+  
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

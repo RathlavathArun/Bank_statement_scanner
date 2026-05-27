@@ -1,0 +1,33 @@
+cd d:\Bank_statement\apps\api
+python -m pytest -q tests/test_statements.pybank_code: "AXIS"
+bank_name: "Axis Bank Ltd."
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Axis Bank"
+    - "Statement of Account"
+  regex:
+    - "IFSC\\s*:\\s*UTIB000[0-9]{4}"
+
+extraction:
+  skip_headers: 1
+  headers:
+    - "Tran Date"
+    - "Particulars"
+    - "Chq No"
+    - "Amount (Debit)"
+    - "Amount (Credit)"
+    - "Balance"
+  
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+
+  formats:
+    date: "%d-%m-%Y"
+    number: "indian"

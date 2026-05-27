@@ -57,17 +57,57 @@ GENERIC_ALIASES = {
 
 def parse_statement(file_path: Path, bank_code: str | None = None) -> ParsedStatement:
     suffix = file_path.suffix.lower()
-    template = load_bank_template(bank_code)
 
     if suffix == ".csv":
-        return parse_rows(read_csv_rows(file_path), template, source="csv")
+        rows = read_csv_rows(file_path)
+        source = "csv"
+    elif suffix == ".pdf":
+        try:
+            import pdfplumber
+        except ImportError as exc:
+            raise StatementParserError(
+                "PDF parsing requires pdfplumber. Install API requirements and retry."
+            ) from exc
+        rows = []
+        with pdfplumber.open(str(file_path)) as pdf:
+            for page in pdf.pages:
+                for table in page.extract_tables() or []:
+                    rows.extend([[cell or "" for cell in row] for row in table])
+        source = "pdf"
+    else:
+        raise StatementParserError(
+            f"Unsupported statement format '{suffix or 'unknown'}'. Upload a CSV or text-based PDF."
+        )
 
-    if suffix == ".pdf":
-        return parse_pdf(file_path, template)
+    # Auto-detect bank code if not provided
+    if not bank_code:
+        bank_code = auto_detect_bank(rows)
 
-    raise StatementParserError(
-        f"Unsupported statement format '{suffix or 'unknown'}'. Upload a CSV or text-based PDF."
-    )
+    template = load_bank_template(bank_code)
+    return parse_rows(rows, template, source=source)
+
+
+def auto_detect_bank(rows: list[list[str]]) -> str | None:
+    # Flatten the first 30 rows to search for keywords/regex
+    header_text = " ".join([cell for row in rows[:30] for cell in row if cell])
+    
+    for code in ["HDFC", "ICICI", "AXIS", "KOTAK"]:
+        template = load_bank_template(code)
+        if not template:
+            continue
+        fingerprint = template.get("fingerprint", {})
+        
+        # Check keywords
+        keywords = fingerprint.get("keywords", [])
+        if keywords and all(kw.lower() in header_text.lower() for kw in keywords):
+            return code
+            
+        # Check regex
+        regexes = fingerprint.get("regex", [])
+        if regexes and any(re.search(rx, header_text, re.IGNORECASE) for rx in regexes):
+            return code
+            
+    return None
 
 
 def load_bank_template(bank_code: str | None) -> dict[str, Any]:
@@ -93,23 +133,6 @@ def read_csv_rows(file_path: Path) -> list[list[str]]:
         return [list(row) for row in csv.reader(csv_file, dialect)]
 
 
-def parse_pdf(file_path: Path, template: dict[str, Any]) -> ParsedStatement:
-    try:
-        import pdfplumber
-    except ImportError as exc:
-        raise StatementParserError(
-            "PDF parsing requires pdfplumber. Install API requirements and retry."
-        ) from exc
-
-    rows: list[list[str]] = []
-    with pdfplumber.open(str(file_path)) as pdf:
-        for page in pdf.pages:
-            for table in page.extract_tables() or []:
-                rows.extend([[cell or "" for cell in row] for row in table])
-
-    return parse_rows(rows, template, source="pdf")
-
-
 def parse_rows(rows: list[list[str]], template: dict[str, Any], source: str) -> ParsedStatement:
     rows = [normalize_row(row) for row in rows if any(cell.strip() for cell in row)]
     if not rows:
@@ -120,11 +143,42 @@ def parse_rows(rows: list[list[str]], template: dict[str, Any], source: str) -> 
 
     transactions: list[ParsedTransaction] = []
     for row_number, row in enumerate(rows[header_index + 1 :], start=1):
-        try:
-            txn = parse_transaction_row(row, row_number, column_indexes, date_formats)
-        except StatementParserError:
-            continue
-        transactions.append(txn)
+        txn_date_str = get_cell(row, column_indexes.get("date"))
+        txn_date = parse_date(txn_date_str, date_formats)
+        narration = get_cell(row, column_indexes.get("narration"))
+
+        if txn_date and narration:
+            debit = parse_amount(get_cell(row, column_indexes.get("debit")))
+            credit = parse_amount(get_cell(row, column_indexes.get("credit")))
+            balance = parse_amount(get_cell(row, column_indexes.get("balance")))
+            
+            txn = ParsedTransaction(
+                row_number=row_number,
+                txn_date=txn_date,
+                value_date=parse_date(get_cell(row, column_indexes.get("value_date")), date_formats),
+                narration=narration,
+                reference_no=get_cell(row, column_indexes.get("reference")) or None,
+                debit=debit,
+                credit=credit,
+                balance=balance,
+            )
+            transactions.append(txn)
+        elif transactions and narration:
+            debit_str = get_cell(row, column_indexes.get("debit"))
+            credit_str = get_cell(row, column_indexes.get("credit"))
+            if not txn_date_str and not debit_str and not credit_str:
+                last_txn = transactions[-1]
+                updated_txn = ParsedTransaction(
+                    row_number=last_txn.row_number,
+                    txn_date=last_txn.txn_date,
+                    value_date=last_txn.value_date,
+                    narration=f"{last_txn.narration} {narration}".strip(),
+                    reference_no=last_txn.reference_no,
+                    debit=last_txn.debit,
+                    credit=last_txn.credit,
+                    balance=last_txn.balance,
+                )
+                transactions[-1] = updated_txn
 
     if not transactions:
         raise StatementParserError("No transaction rows matched the selected bank template.")

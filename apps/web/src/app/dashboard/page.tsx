@@ -67,6 +67,45 @@ export default function DashboardPage() {
       return;
     }
 
+    const fetchStatements = async () => {
+      try {
+        const res = await fetch("http://localhost:8000/v1/statements");
+        const data = await res.json();
+        if (data.success) {
+          setStatements(data.data);
+          
+          // Connect WebSockets for any non-terminal statements
+          data.data.forEach((stmt: StatementSummary) => {
+            if (stmt.status === "UPLOADED" || stmt.status === "PARSING") {
+              const ws = new WebSocket(`ws://localhost:8000/v1/ws/statements/${stmt.id}`);
+              ws.onmessage = (event) => {
+                try {
+                  if (event.data === "pong") return;
+                  const msg = JSON.parse(event.data);
+                  if (msg.event === "status_changed") {
+                    setStatements((prev) =>
+                      prev.map((s) =>
+                        s.id === msg.statement_id
+                          ? { ...s, status: msg.status }
+                          : s
+                      )
+                    );
+                    if (msg.status === "READY_FOR_REVIEW" || msg.status === "FAILED") {
+                      ws.close();
+                    }
+                  }
+                } catch (e) {
+                  console.error(e);
+                }
+              };
+            }
+          });
+        }
+      } catch (err) {
+        console.error("Failed to fetch statements:", err);
+      }
+    };
+
     const fetchUser = async () => {
       try {
         const res = await fetch("http://localhost:8000/v1/auth/me", {
@@ -79,6 +118,7 @@ export default function DashboardPage() {
 
         if (data.success) {
           setUser(data.data.user);
+          await fetchStatements();
         } else {
           localStorage.removeItem("access_token");
           router.push("/login");
@@ -185,9 +225,33 @@ export default function DashboardPage() {
       ]);
 
       setFile(null);
-      if (data.data.status === "READY_FOR_REVIEW") {
-        fetchResult(data.data.id);
-      }
+      
+      // Establish WebSocket for real-time status updates
+      const ws = new WebSocket(`ws://localhost:8000/v1/ws/statements/${data.data.id}`);
+      ws.onmessage = (event) => {
+        try {
+          if (event.data === "pong") return;
+          const msg = JSON.parse(event.data);
+          if (msg.event === "status_changed") {
+            setStatus(msg.status);
+            setStatements((prev) =>
+              prev.map((stmt) =>
+                stmt.id === msg.statement_id
+                  ? { ...stmt, status: msg.status }
+                  : stmt
+              )
+            );
+            if (msg.status === "READY_FOR_REVIEW") {
+              fetchResult(msg.statement_id);
+              ws.close();
+            } else if (msg.status === "FAILED") {
+              ws.close();
+            }
+          }
+        } catch (err) {
+          console.error("WS error parsing message:", err);
+        }
+      };
     } catch (err) {
       console.error(err);
       setStatus("failed");
@@ -346,20 +410,43 @@ export default function DashboardPage() {
               </div>
             ) : (
               <div className="p-4">
-                <div className="grid grid-cols-3 text-sm font-semibold text-slate-500 border-b pb-2">
+                <div className="grid grid-cols-4 text-sm font-semibold text-slate-500 border-b pb-2">
                   <span>Filename</span>
                   <span>Bank</span>
                   <span>Status</span>
+                  <span>Actions</span>
                 </div>
 
                 {statements.map((stmt) => (
                   <div
                     key={stmt.id}
-                    className="grid grid-cols-3 text-sm py-3 border-b last:border-b-0 text-slate-700 dark:text-slate-300"
+                    className="grid grid-cols-4 text-sm py-3 items-center border-b last:border-b-0 text-slate-700 dark:text-slate-300"
                   >
-                    <span className="truncate pr-4">{stmt.filename}</span>
-                    <span>{stmt.bank}</span>
-                    <span>{stmt.status}</span>
+                    <span className="truncate pr-4 font-medium">{stmt.filename}</span>
+                    <span className="font-semibold text-slate-500">{stmt.bank}</span>
+                    <span className="flex items-center gap-2">
+                      <span className={`h-2 w-2 rounded-full ${
+                        stmt.status === "READY_FOR_REVIEW" ? "bg-emerald-500 animate-pulse" :
+                        stmt.status === "FAILED" ? "bg-rose-500" :
+                        stmt.status === "UPLOADED" ? "bg-slate-400" : "bg-amber-500"
+                      }`}></span>
+                      <span className="text-xs uppercase font-bold tracking-wider">{stmt.status}</span>
+                    </span>
+                    <span>
+                      {stmt.status === "READY_FOR_REVIEW" ? (
+                        <Button
+                          size="sm"
+                          onClick={() => router.push(`/dashboard/statements/${stmt.id}/review`)}
+                          className="bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-sm transition-all"
+                        >
+                          Review
+                        </Button>
+                      ) : stmt.status === "FAILED" ? (
+                        <span className="text-rose-500 text-xs font-semibold">Failed</span>
+                      ) : (
+                        <span className="text-slate-400 text-xs animate-pulse">Processing...</span>
+                      )}
+                    </span>
                   </div>
                 ))}
 

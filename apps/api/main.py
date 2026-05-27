@@ -37,7 +37,7 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
-app.include_router(statements_router)
+
 # ─── CORS Middleware ─────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
@@ -48,7 +48,20 @@ app.add_middleware(
 )
 
 # ─── Routers ─────────────────────────────────────────────────
+app.include_router(statements_router)
 app.include_router(auth_router)
+
+# ─── Prometheus Metrics (/metrics) ───────────────────────────
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+    Instrumentator(
+        should_group_status_codes=True,
+        should_ignore_untemplated=True,
+        should_group_untemplated=True,
+        excluded_handlers=["/metrics", "/health"],
+    ).instrument(app).expose(app, endpoint="/metrics", tags=["Monitoring"])
+except ImportError:
+    print("[WARN] prometheus-fastapi-instrumentator not installed — /metrics disabled.")
 
 
 # ─── Health Check ────────────────────────────────────────────
