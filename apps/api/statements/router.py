@@ -1,14 +1,22 @@
 import shutil
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query, status
+from fastapi.responses import FileResponse
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
 from db.models import Client, Firm, Statement, Transaction
 from statements.parser import StatementParserError, parse_statement
+from statements.schemas import (
+    TransactionItem, TransactionUpdate, BulkUpdateRequest, BulkUpdateResponse,
+    StatementListItem, PaginatedTransactions, PaginatedStatements, StatementStatusUpdate,
+)
+from statements.websocket import notify_status_change
 
 router = APIRouter(prefix="/v1/statements", tags=["statements"])
 
@@ -17,6 +25,11 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_FIRM_NAME = "Default Firm"
 DEFAULT_CLIENT_NAME = "Default Client"
+
+# Allowed statement statuses
+ALLOWED_STATUSES = {
+    "UPLOADED", "PARSING", "OCR", "READY_FOR_REVIEW", "REVIEWED", "EXPORTED", "FAILED", "PARSE_ERROR"
+}
 
 
 def file_type_for(filename: str) -> str:
@@ -129,6 +142,7 @@ async def upload_statement(
             ]
         )
     await db.flush()
+    await notify_status_change(statement.id, statement.status)
 
     return {
         "success": True,
@@ -185,3 +199,260 @@ async def get_statement_result(
             "transactions": [serialize_transaction(txn) for txn in transactions],
         },
     }
+
+
+# ─────────────────────────────────────────────────────────────
+# PHASE 2 NEW ENDPOINTS
+# ─────────────────────────────────────────────────────────────
+
+@router.get("", response_model=dict)
+async def list_statements(
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=100),
+    status: Optional[str] = None,
+    bank_id: Optional[str] = None,
+    bank_code: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """List all statements with pagination and filters."""
+    query = select(Statement)
+    
+    if status:
+        query = query.where(Statement.status == status)
+    selected_bank = bank_id or bank_code
+    if selected_bank:
+        query = query.where(Statement.bank_code == selected_bank)
+    
+    # Get total count
+    count_result = await db.execute(select(func.count()).select_from(query.subquery()))
+    total = count_result.scalar_one()
+    
+    # Get paginated results
+    query = query.order_by(Statement.created_at.desc()).offset((page - 1) * size).limit(size)
+    result = await db.execute(query)
+    statements = result.scalars().all()
+    
+    # Count transactions per statement
+    items = []
+    for stmt in statements:
+        tx_count_result = await db.execute(
+            select(func.count(Transaction.id)).where(Transaction.statement_id == stmt.id)
+        )
+        tx_count = tx_count_result.scalar_one() or 0
+        
+        items.append(StatementListItem(
+            id=stmt.id,
+            filename=stmt.metadata_.get("original_filename") or Path(stmt.file_url).name or "statement",
+            client_id=stmt.client_id,
+            file_type=stmt.file_type,
+            bank_id=stmt.bank_code,
+            bank_code=stmt.bank_code,
+            account_number=stmt.account_number,
+            account_holder=stmt.account_holder,
+            period_start=stmt.period_start.isoformat() if stmt.period_start else None,
+            period_end=stmt.period_end.isoformat() if stmt.period_end else None,
+            status=stmt.status,
+            error_message=stmt.error_message,
+            created_at=stmt.created_at,
+            transaction_count=tx_count,
+        ))
+    
+    pages = -(-total // size)  # Ceiling division
+    
+    return {
+        "success": True,
+        "data": PaginatedStatements(
+            items=items,
+            total=total,
+            page=page,
+            size=size,
+            pages=pages,
+        ).model_dump()
+    }
+
+
+@router.get("/{statement_id}/transactions", response_model=dict)
+async def list_transactions(
+    statement_id: str,
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=100),
+    tx_type: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    search: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """List transactions for a statement with filtering."""
+    # Verify statement exists
+    stmt = await db.get(Statement, statement_id)
+    if not stmt:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    
+    query = select(Transaction).where(Transaction.statement_id == statement_id)
+    
+    # Apply filters
+    if tx_type:
+        tx_type = tx_type.upper()
+        if tx_type == "DEBIT":
+            query = query.where(Transaction.debit.isnot(None))
+        elif tx_type == "CREDIT":
+            query = query.where(Transaction.credit.isnot(None))
+    
+    if date_from:
+        query = query.where(Transaction.txn_date >= datetime.strptime(date_from, "%Y-%m-%d").date())
+    if date_to:
+        query = query.where(Transaction.txn_date <= datetime.strptime(date_to, "%Y-%m-%d").date())
+    
+    if search:
+        query = query.where(Transaction.narration.ilike(f"%{search}%"))
+    
+    # Get total count
+    count_query = query.order_by(None).subquery()
+    count_result = await db.execute(select(func.count()).select_from(count_query))
+    total = count_result.scalar_one()
+    
+    # Get paginated results
+    query = query.order_by(Transaction.txn_date).offset((page - 1) * size).limit(size)
+    result = await db.execute(query)
+    transactions = result.scalars().all()
+    
+    items = [TransactionItem.model_validate(txn) for txn in transactions]
+    pages = -(-total // size) if total > 0 else 1
+    
+    return {
+        "success": True,
+        "data": PaginatedTransactions(
+            items=items,
+            total=total,
+            page=page,
+            size=size,
+            pages=pages,
+        ).model_dump()
+    }
+
+
+@router.put("/{statement_id}/transactions/{transaction_id}", response_model=dict)
+async def update_transaction(
+    statement_id: str,
+    transaction_id: str,
+    body: TransactionUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a single transaction."""
+    result = await db.execute(
+        select(Transaction).where(
+            Transaction.id == transaction_id,
+            Transaction.statement_id == statement_id,
+        )
+    )
+    tx = result.scalar_one_or_none()
+    
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    # Apply updates (only present fields)
+    for field, value in body.model_dump(exclude_unset=True).items():
+        setattr(tx, field, value)
+    
+    await db.commit()
+    await db.refresh(tx)
+    
+    return {
+        "success": True,
+        "data": TransactionItem.model_validate(tx).model_dump()
+    }
+
+
+@router.post("/{statement_id}/transactions/bulk-update", response_model=dict)
+async def bulk_update_transactions(
+    statement_id: str,
+    body: BulkUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk update multiple transactions in a single transaction."""
+    # Verify statement exists
+    stmt = await db.get(Statement, statement_id)
+    if not stmt:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    
+    updated = 0
+    failed = []
+    
+    for item in body.updates:
+        result = await db.execute(
+            select(Transaction).where(
+                Transaction.id == item.id,
+                Transaction.statement_id == statement_id,
+            )
+        )
+        tx = result.scalar_one_or_none()
+        
+        if not tx:
+            failed.append({"id": item.id, "reason": "Transaction not found"})
+            continue
+        
+        # Apply updates
+        for field, value in item.model_dump(exclude_unset=True, exclude={"id"}).items():
+            setattr(tx, field, value)
+        
+        updated += 1
+    
+    await db.commit()
+    
+    return {
+        "success": True,
+        "data": BulkUpdateResponse(updated=updated, failed=failed).model_dump()
+    }
+
+
+@router.patch("/{statement_id}/status", response_model=dict)
+async def update_statement_status(
+    statement_id: str,
+    body: StatementStatusUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update statement status."""
+    stmt = await db.get(Statement, statement_id)
+    if not stmt:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    
+    if body.status not in ALLOWED_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid status. Allowed: {', '.join(ALLOWED_STATUSES)}"
+        )
+    
+    stmt.status = body.status
+    await db.commit()
+    await db.refresh(stmt)
+    
+    # Notify WebSocket watchers
+    await notify_status_change(statement_id, body.status)
+    
+    return {
+        "success": True,
+        "data": {
+            "statement_id": stmt.id,
+            "status": stmt.status,
+        }
+    }
+
+
+@router.get("/{statement_id}/file", response_class=FileResponse)
+async def get_statement_file(
+    statement_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Download the uploaded statement file."""
+    stmt = await db.get(Statement, statement_id)
+    if not stmt:
+        raise HTTPException(status_code=404, detail="Statement not found")
+    
+    file_path = Path(stmt.file_url)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    
+    return FileResponse(
+        path=file_path,
+        filename=stmt.metadata_.get("original_filename", "statement"),
+    )

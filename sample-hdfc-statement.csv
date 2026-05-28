@@ -1,0 +1,6 @@
+Date,Narration,Chq./Ref.No.,Value Dt,Withdrawal Amt.,Deposit Amt.,Closing Balance
+01/05/26,UPI Payment to Vendor,UPI12345,01/05/26,1200,,48800
+03/05/26,NEFT Received,NEFT99881,03/05/26,,10000,58800
+05/05/26,ATM Withdrawal,ATM4455,05/05/26,2500,,56300
+08/05/26,Salary Credit,SAL202605,08/05/26,,75000,131300
+10/05/26,Card Payment Grocery Store,POS7788,10/05/26,1850.50,,129449.50

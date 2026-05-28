@@ -1,0 +1,25 @@
+bank_id: kotak
+display_name: "Kotak Mahindra Bank"
+bank_code: kotak
+extraction:
+  headers:
+    - "Date"
+    - "Transaction Date"
+    - "Value Date"
+    - "Posting Date"
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+  formats:
+    date: "%d-%m-%Y"
+fingerprint:
+  keywords:
+    - "kotak mahindra"
+    - "KOTAKBANK"
+    - "kotak bank"
+    - "Kotak Mahindra Bank"
+    - "KMB"

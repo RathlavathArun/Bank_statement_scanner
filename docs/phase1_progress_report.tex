@@ -1,0 +1,118 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{longtable}
+\usepackage{xcolor}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue
+}
+
+\title{Bank Statement Scanner\\Phase 1 Progress Report}
+\author{Project Handoff}
+\date{May 26, 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Summary}
+
+Phase 1 establishes the first complete upload-to-review loop for the Bank
+Statement Scanner. Users can upload a statement from the dashboard, select a
+bank, send the file to the FastAPI backend, persist statement metadata in the
+database, parse transaction rows, poll status by unique statement ID, and view
+extracted transactions in the dashboard.
+
+The Phase 1 code is pushed to the GitHub branch:
+\begin{quote}
+\texttt{phase1-upload-ui}
+\end{quote}
+
+A draft pull request was created:
+\begin{quote}
+\url{https://github.com/RathlavathArun/Bank_statement_scanner/pull/1}
+\end{quote}
+
+\section{Frontend Work Completed}
+
+\begin{itemize}[leftmargin=*]
+  \item Added a statement upload UI to the dashboard.
+  \item Added bank selection chips for \texttt{HDFC}, \texttt{ICICI}, and \texttt{SBI}.
+  \item Connected the top \texttt{+ Upload Statement} button to the hidden file picker.
+  \item Connected uploads using \texttt{FormData}.
+  \item Added upload status, progress display, and error display.
+  \item Added a Recent Statements list.
+  \item Added automatic status polling.
+  \item Added an Extracted Transactions table.
+  \item Moved Extracted Transactions below Recent Statements.
+  \item Updated frontend polling to use statement IDs instead of filenames.
+\end{itemize}
+
+\section{Backend Work Completed}
+
+\begin{itemize}[leftmargin=*]
+  \item Created statement API routes under \texttt{/v1/statements}.
+  \item Added \texttt{POST /v1/statements/upload}.
+  \item Added \texttt{GET /v1/statements/\{statement\_id\}/status}.
+  \item Added \texttt{GET /v1/statements/\{statement\_id\}/result}.
+  \item Connected the statements router in \texttt{apps/api/main.py}.
+  \item Saved uploaded files locally under \texttt{apps/api/uploads}.
+  \item Replaced in-memory \texttt{statement\_status} with persisted database rows.
+  \item Used existing \texttt{Statement} and \texttt{Transaction} ORM models.
+  \item Added unique statement IDs using the existing model ID generation.
+  \item Replaced dummy transaction data with parser-backed transaction rows.
+  \item Added CSV parsing with bank-template-aware column mapping.
+  \item Added text-based PDF parsing support through \texttt{pdfplumber}.
+  \item Added endpoint tests for upload, status, result, and unsupported files.
+\end{itemize}
+
+\section{Important Files Changed}
+
+\begin{longtable}{p{0.38\textwidth}p{0.55\textwidth}}
+\textbf{File} & \textbf{Purpose} \\
+\hline
+\texttt{apps/api/statements/router.py} & Upload, status, and result endpoints using DB-backed statements. \\
+\texttt{apps/api/statements/parser.py} & CSV/PDF parser helper that maps statement rows into parsed transactions. \\
+\texttt{apps/api/tests/test\_statements.py} & Backend tests for the statement API flow. \\
+\texttt{apps/api/requirements.txt} & Added parser and test dependencies. \\
+\texttt{apps/web/src/app/dashboard/page.tsx} & Dashboard upload UI, polling by ID, Recent Statements, and Extracted Transactions. \\
+\texttt{.gitignore} & Ignores local uploads and the local SQLite database. \\
+\end{longtable}
+
+\section{Verification Performed}
+
+\begin{itemize}[leftmargin=*]
+  \item \texttt{apps/api/venv/bin/pytest apps/api/tests -q}: passed.
+  \item \texttt{apps/api/venv/bin/python -m compileall apps/api -q}: passed.
+  \item \texttt{npm run lint}: passed with two pre-existing warnings in login/signup.
+  \item \texttt{npm run build}: passed.
+\end{itemize}
+
+\section{Known Notes}
+
+\begin{itemize}[leftmargin=*]
+  \item The current parser is sufficient for Phase 1, but production-grade PDF parsing will need more bank-specific hardening.
+  \item Uploads are still saved locally, not in S3 or MinIO.
+  \item A default firm/client is created for unauthenticated statement uploads. Later phases should connect uploads to the authenticated user's real firm/client context.
+  \item Local files under \texttt{apps/api/uploads} and \texttt{apps/api/bank\_statements.db} are intentionally ignored.
+  \item A local sample file named \texttt{sample-hdfc-statement.csv} exists for manual testing. It was created after the draft PR and is not included in PR \#1 unless committed separately.
+\end{itemize}
+
+\section{Suggested Next Phase}
+
+\begin{enumerate}[leftmargin=*]
+  \item Connect statement uploads to authenticated user, firm, and client records.
+  \item Add a statement list endpoint so the dashboard can load persisted statements after refresh.
+  \item Improve PDF parsing accuracy for real HDFC, ICICI, and SBI samples.
+  \item Add XLS/XLSX parsing.
+  \item Move parser execution to a background worker.
+  \item Store uploaded files in S3/MinIO instead of local disk.
+  \item Add review/edit workflows for extracted transactions.
+\end{enumerate}
+
+\end{document}

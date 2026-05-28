@@ -1,0 +1,10 @@
+{
+  "name": "bank-statement-scanner",
+  "private": true,
+  "scripts": {
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.57.0"
+  }
+}

@@ -1,0 +1,24 @@
+bank_id: axis
+display_name: "Axis Bank"
+bank_code: axis
+extraction:
+  headers:
+    - "Date"
+    - "Tran Date"
+    - "Transaction Date"
+    - "VALUE DATE"
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+  formats:
+    date: "%d-%m-%Y"
+fingerprint:
+  keywords:
+    - "axis bank"
+    - "AXISBANK"
+    - "axis bank limited"
+    - "AXIS BANK"

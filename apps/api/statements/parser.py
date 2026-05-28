@@ -116,6 +116,17 @@ def parse_rows(rows: list[list[str]], template: dict[str, Any], source: str) -> 
         raise StatementParserError("No readable rows found in the statement.")
 
     header_index, column_indexes = detect_columns(rows, template)
+    header = rows[header_index]
+    data_rows = rows[header_index + 1 :]
+    rows_as_dicts = [
+        {header[index] if index < len(header) else str(index): cell for index, cell in enumerate(row)}
+        for row in data_rows
+    ]
+    merged_dicts = _merge_continuation_rows(rows_as_dicts)
+    rows = rows[: header_index + 1] + [
+        [row.get(header[index] if index < len(header) else str(index), "") for index in range(len(header))]
+        for row in merged_dicts
+    ]
     date_formats = get_date_formats(template)
 
     transactions: list[ParsedTransaction] = []
@@ -137,6 +148,70 @@ def parse_rows(rows: list[list[str]], template: dict[str, Any], source: str) -> 
             "row_count": len(transactions),
         },
     )
+
+
+def _merge_continuation_rows(
+    rows: list[dict[str, Any]],
+    template: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """
+    Merge continuation rows (rows with narration but empty amounts/dates) 
+    into the previous transaction row.
+    
+    A continuation row is detected by:
+    - Having narration text but empty/NaN in date, debit, credit, balance columns
+    
+    All such rows are merged into the previous row and dropped from the list.
+    """
+    def clean(value: Any) -> str:
+        text = str(value or "").strip()
+        return "" if text.lower() in {"nan", "none", "null"} else text
+
+    def matching_keys(patterns: tuple[str, ...]) -> list[str]:
+        keys: list[str] = []
+        for key in rows[0].keys():
+            normalized = normalize_header(str(key))
+            if any(pattern in normalized for pattern in patterns):
+                keys.append(key)
+        return keys
+
+    if not rows:
+        return []
+
+    narration_keys = matching_keys(("narration", "particular", "description", "remark"))
+    date_keys = matching_keys(("date",))
+    amount_keys = matching_keys(("debit", "credit", "withdrawal", "deposit", "amount", "dr", "cr"))
+    balance_keys = matching_keys(("balance", "bal"))
+
+    if not narration_keys:
+        narration_keys = [list(rows[0].keys())[1]] if len(rows[0]) > 1 else [list(rows[0].keys())[0]]
+    if not date_keys and all(str(key).isdigit() for key in rows[0].keys()):
+        date_keys = [list(rows[0].keys())[0]]
+    if not amount_keys and all(str(key).isdigit() for key in rows[0].keys()) and len(rows[0]) >= 5:
+        keys = list(rows[0].keys())
+        amount_keys = [keys[3], keys[4]]
+    if not balance_keys and all(str(key).isdigit() for key in rows[0].keys()) and len(rows[0]) >= 6:
+        balance_keys = [list(rows[0].keys())[5]]
+
+    merged: list[dict[str, str]] = []
+    for row in rows:
+        normalized_row = {str(key): clean(value) for key, value in row.items()}
+        has_narration = any(clean(row.get(key)) for key in narration_keys)
+        date_empty = all(not clean(row.get(key)) for key in date_keys)
+        amounts_empty = all(not clean(row.get(key)) for key in amount_keys)
+        balance_empty = all(not clean(row.get(key)) for key in balance_keys)
+        is_continuation = has_narration and date_empty and amounts_empty and balance_empty
+
+        if merged and is_continuation:
+            prev_row = merged[-1]
+            for key in narration_keys:
+                curr_val = clean(row.get(key))
+                if curr_val:
+                    prev_row[str(key)] = " ".join(part for part in [prev_row.get(str(key), ""), curr_val] if part)
+        else:
+            merged.append(normalized_row)
+
+    return merged
 
 
 def normalize_row(row: Iterable[Any]) -> list[str]:
