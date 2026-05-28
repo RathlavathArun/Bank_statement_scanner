@@ -2,6 +2,7 @@
 
 import { Dispatch, RefObject, SetStateAction, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -92,6 +93,34 @@ export default function DashboardPage() {
 
     fetchUser();
   }, [router]);
+
+  // Load persisted statements from API on page load
+  useEffect(() => {
+    const token = localStorage.getItem("access_token");
+    const fetchStatements = async () => {
+      try {
+        const res = await fetch("http://localhost:8000/v1/statements?page=1&size=20", {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.data && data.data.items) {
+            setStatements(
+              data.data.items.map((stmt: any) => ({
+                id: stmt.id,
+                filename: stmt.file_url?.split("/").pop() || "Unknown",
+                bank: stmt.bank_code || "Unknown",
+                status: stmt.status,
+              }))
+            );
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load statements:", err);
+      }
+    };
+    fetchStatements();
+  }, []);
 
   const fetchResult = useCallback(async (statementId: string) => {
     const res = await fetch(`http://localhost:8000/v1/statements/${statementId}/result`);
@@ -346,20 +375,33 @@ export default function DashboardPage() {
               </div>
             ) : (
               <div className="p-4">
-                <div className="grid grid-cols-3 text-sm font-semibold text-slate-500 border-b pb-2">
+                <div className="grid grid-cols-4 text-sm font-semibold text-slate-500 border-b pb-2">
                   <span>Filename</span>
                   <span>Bank</span>
                   <span>Status</span>
+                  <span>Action</span>
                 </div>
 
                 {statements.map((stmt) => (
                   <div
                     key={stmt.id}
-                    className="grid grid-cols-3 text-sm py-3 border-b last:border-b-0 text-slate-700 dark:text-slate-300"
+                    className="grid grid-cols-4 text-sm py-3 border-b last:border-b-0 text-slate-700 dark:text-slate-300 items-center"
                   >
                     <span className="truncate pr-4">{stmt.filename}</span>
                     <span>{stmt.bank}</span>
-                    <span>{stmt.status}</span>
+                    <span data-testid={`status-chip-${stmt.id}`}>{stmt.status}</span>
+                    {stmt.status === "READY_FOR_REVIEW" ? (
+                      <Link
+                        href={`/dashboard/review/${stmt.id}`}
+                        data-testid={`review-button-${stmt.id}`}
+                        className="px-3 py-1 rounded-lg text-xs bg-purple-600 hover:bg-purple-500
+                                 text-white font-medium transition-all w-fit"
+                      >
+                        Review →
+                      </Link>
+                    ) : (
+                      <span className="text-xs text-slate-500">—</span>
+                    )}
                   </div>
                 ))}
 

@@ -12,11 +12,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 from core.config import settings
 from core.response import ApiResponse
 from db.database import init_db
 from auth.router import router as auth_router
 from statements.router import router as statements_router
+from statements.websocket import ws_router
 
 
 @asynccontextmanager
@@ -37,7 +39,10 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
-app.include_router(statements_router)
+
+# ─── Prometheus Instrumentation ──────────────────────────────
+Instrumentator().instrument(app).expose(app)
+
 # ─── CORS Middleware ─────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
@@ -48,6 +53,8 @@ app.add_middleware(
 )
 
 # ─── Routers ─────────────────────────────────────────────────
+app.include_router(statements_router)
+app.include_router(ws_router)
 app.include_router(auth_router)
 
 

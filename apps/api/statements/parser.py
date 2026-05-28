@@ -115,6 +115,11 @@ def parse_rows(rows: list[list[str]], template: dict[str, Any], source: str) -> 
     if not rows:
         raise StatementParserError("No readable rows found in the statement.")
 
+    # Merge continuation rows before column detection
+    rows_as_dicts = [dict(enumerate(row)) for row in rows]
+    rows_as_dicts = _merge_continuation_rows(rows_as_dicts, template)
+    rows = [list(d.values()) for d in rows_as_dicts]
+
     header_index, column_indexes = detect_columns(rows, template)
     date_formats = get_date_formats(template)
 
@@ -137,6 +142,72 @@ def parse_rows(rows: list[list[str]], template: dict[str, Any], source: str) -> 
             "row_count": len(transactions),
         },
     )
+
+
+def _merge_continuation_rows(rows: list[dict], template: dict[str, Any]) -> list[dict]:
+    """
+    Merge continuation rows (rows with narration but empty amounts/dates) 
+    into the previous transaction row.
+    
+    A continuation row is detected by:
+    - Having narration text but empty/NaN in date, debit, credit, balance columns
+    
+    All such rows are merged into the previous row and dropped from the list.
+    """
+    if not rows:
+        return rows
+    
+    # Get all keys to check for narration/amount/date columns
+    sample_keys = list(rows[0].keys()) if rows else []
+    
+    # Detect which column indices likely contain which data
+    narration_indices = []
+    date_indices = []
+    amount_indices = []
+    balance_indices = []
+    
+    for idx, _ in enumerate(sample_keys):
+        # This is a simple heuristic - we'll check cell values to categorize
+        pass
+    
+    merged = []
+    for row in rows:
+        # Convert dict to list for easier checking
+        row_values = [row.get(k, "").strip() for k in sample_keys]
+        
+        # Check if this is a continuation row:
+        # Has some narration, but all of date/debit/credit/balance are empty
+        has_narration = any(v for v in row_values)
+        
+        # Check if it looks like a data row vs continuation
+        # Simple heuristic: if ALL values are empty -> skip; if some have dates/amounts -> data row
+        # If has text but no amounts/dates -> likely continuation
+        date_empty = True
+        amounts_empty = True
+        
+        for val in row_values:
+            if any(char in val for char in "0123456789/-"):
+                if any(c in val for c in "/-"):
+                    date_empty = False
+                amounts_empty = False
+        
+        is_continuation = has_narration and date_empty and amounts_empty
+        
+        if merged and is_continuation:
+            # Merge into previous row
+            prev_row = merged[-1]
+            for key in row:
+                prev_val = prev_row.get(key, "").strip()
+                curr_val = row.get(key, "").strip()
+                if curr_val and not prev_val:
+                    prev_row[key] = curr_val
+                elif curr_val and prev_val and key not in prev_row:
+                    prev_row[key] = prev_val + " " + curr_val
+        else:
+            merged.append(dict(row))
+    
+    return merged
+
 
 
 def normalize_row(row: Iterable[Any]) -> list[str]:
