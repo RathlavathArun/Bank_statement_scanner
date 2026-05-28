@@ -1,153 +1,156 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import * as pdfjs from "pdfjs-dist";
+import { ComponentType, ReactNode, useEffect, useState } from "react";
+import "react-pdf/dist/Page/AnnotationLayer.css";
+import "react-pdf/dist/Page/TextLayer.css";
 
-interface PDFViewerProps {
+type PDFViewerProps = {
   fileUrl: string;
-}
+};
+
+type DocumentProps = {
+  file: string;
+  loading: ReactNode;
+  error: ReactNode;
+  onLoadSuccess: (meta: { numPages: number }) => void;
+  children: ReactNode;
+};
+
+type PageProps = {
+  pageNumber: number;
+  scale: number;
+  renderAnnotationLayer: boolean;
+  renderTextLayer: boolean;
+};
+
+type ReactPdfModule = {
+  Document: ComponentType<DocumentProps>;
+  Page: ComponentType<PageProps>;
+  pdfjs: {
+    version: string;
+    GlobalWorkerOptions: {
+      workerSrc: string;
+    };
+  };
+};
 
 export function PDFViewer({ fileUrl }: PDFViewerProps) {
+  const [reactPdf, setReactPdf] = useState<ReactPdfModule | null>(null);
   const [numPages, setNumPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [zoom, setZoom] = useState(1);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  // Set up PDF.js worker
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
-    }
-  }, []);
+  const [viewerError, setViewerError] = useState(false);
 
   useEffect(() => {
-    const loadPdf = async () => {
+    let cancelled = false;
+
+    const loadRenderer = async () => {
       try {
-        setLoading(true);
-        setError(null);
-        const pdf = await pdfjs.getDocument(fileUrl).promise;
-        setNumPages(pdf.numPages);
-        setCurrentPage(1);
-      } catch (err) {
-        setError("Failed to load PDF");
-        console.error(err);
-      } finally {
-        setLoading(false);
+        const mod = await import("react-pdf");
+        mod.pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${mod.pdfjs.version}/build/pdf.worker.min.mjs`;
+        if (!cancelled) {
+          setReactPdf(mod as ReactPdfModule);
+        }
+      } catch (error) {
+        console.error("PDF renderer failed to load", error);
+        if (!cancelled) {
+          setViewerError(true);
+        }
       }
     };
 
-    if (fileUrl) {
-      loadPdf();
-    }
-  }, [fileUrl]);
+    void loadRenderer();
 
-  const handleNextPage = () => {
-    if (currentPage < numPages) {
-      setCurrentPage(currentPage + 1);
-    }
-  };
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  const handlePrevPage = () => {
-    if (currentPage > 1) {
-      setCurrentPage(currentPage - 1);
-    }
-  };
+  const loading = (
+    <div className="space-y-2 p-4">
+      {Array.from({ length: 8 }).map((_, index) => (
+        <div key={index} className="h-8 animate-pulse rounded bg-white/5" />
+      ))}
+    </div>
+  );
 
-  const zoomPercentage = Math.round(zoom * 100);
+  const fallback = (
+    <div className="flex min-h-[320px] flex-col items-center justify-center text-center">
+      <p className="mb-4 text-red-300">PDF preview not available</p>
+      <a className="text-blue-300 underline" href={fileUrl} download>
+        Download file
+      </a>
+    </div>
+  );
 
-  if (error) {
-    return (
-      <div
-        data-testid="pdf-viewer"
-        className="flex flex-col items-center justify-center h-full bg-black/30 backdrop-blur-xl border border-white/10 rounded-lg p-8 text-white"
-      >
-        <div className="text-center">
-          <p className="text-red-400 mb-4">{error}</p>
-          <a
-            href={fileUrl}
-            download
-            className="text-blue-400 hover:text-blue-300 underline"
-          >
-            Download PDF instead
-          </a>
-        </div>
-      </div>
-    );
-  }
-
-  if (loading) {
-    return (
-      <div
-        data-testid="pdf-viewer"
-        className="space-y-2 bg-black/30 backdrop-blur-xl border border-white/10 rounded-lg p-4"
-      >
-        {[...Array(8)].map((_, i) => (
-          <div
-            key={i}
-            className="h-8 bg-white/5 rounded animate-pulse"
-          />
-        ))}
-      </div>
-    );
-  }
+  const Document = reactPdf?.Document;
+  const Page = reactPdf?.Page;
 
   return (
     <div
       data-testid="pdf-viewer"
-      className="flex flex-col h-full bg-black/30 backdrop-blur-xl border border-white/10 rounded-lg overflow-hidden"
+      className="flex h-full min-h-[420px] flex-col overflow-hidden rounded-lg border border-white/10 bg-black/30 text-white backdrop-blur-xl"
     >
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-white/10 bg-black/40">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-black/40 p-4">
         <div className="flex items-center gap-2">
           <button
-            onClick={handlePrevPage}
-            disabled={currentPage === 1}
-            className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm transition-all"
+            type="button"
+            onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+            disabled={currentPage <= 1}
+            className="rounded-lg bg-white/10 px-3 py-1 text-sm transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-30"
           >
-            ← Prev
+            Prev
           </button>
-          <span className="text-white text-sm px-2">
-            {currentPage} / {numPages}
+          <span className="min-w-16 text-center text-sm">
+            {currentPage} / {numPages || 1}
           </span>
           <button
-            onClick={handleNextPage}
-            disabled={currentPage === numPages}
-            className="px-3 py-1 rounded-lg bg-white/10 hover:bg-white/20 disabled:opacity-30 disabled:cursor-not-allowed text-white text-sm transition-all"
+            type="button"
+            onClick={() => setCurrentPage((page) => Math.min(numPages || 1, page + 1))}
+            disabled={currentPage >= numPages}
+            className="rounded-lg bg-white/10 px-3 py-1 text-sm transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-30"
           >
-            Next →
+            Next
           </button>
         </div>
 
-        {/* Zoom Controls */}
-        <div className="flex items-center gap-3">
+        <label className="flex items-center gap-3 text-sm">
           <input
             type="range"
             min="0.5"
             max="2"
             step="0.1"
             value={zoom}
-            onChange={(e) => setZoom(parseFloat(e.target.value))}
-            className="w-24"
+            onChange={(event) => setZoom(Number(event.target.value))}
+            className="w-28"
           />
-          <span className="text-white text-sm min-w-[50px] text-right">
-            {zoomPercentage}%
-          </span>
-        </div>
+          <span className="min-w-12 text-right">{Math.round(zoom * 100)}%</span>
+        </label>
       </div>
 
-      {/* Content */}
-      <div className="flex-1 overflow-auto flex items-center justify-center p-4">
-        <div className="text-white text-center">
-          <p className="text-gray-400">
-            PDF preview - Page {currentPage} of {numPages}
-          </p>
-          <p className="text-sm text-gray-500 mt-2">
-            Full PDF viewer rendering coming soon.
-            <br />
-            Download to view the complete document.
-          </p>
-        </div>
+      <div className="flex-1 overflow-auto p-4">
+        {viewerError || !Document || !Page ? (
+          viewerError ? fallback : loading
+        ) : (
+          <Document
+            file={fileUrl}
+            loading={loading}
+            error={fallback}
+            onLoadSuccess={({ numPages: loadedPages }) => {
+              setNumPages(loadedPages);
+              setCurrentPage(1);
+            }}
+          >
+            <div className="flex justify-center">
+              <Page
+                pageNumber={currentPage}
+                scale={zoom}
+                renderAnnotationLayer
+                renderTextLayer
+              />
+            </div>
+          </Document>
+        )}
       </div>
     </div>
   );

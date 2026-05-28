@@ -6,6 +6,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
 type DashboardUser = {
   full_name?: string | null;
   firm?: {
@@ -17,6 +19,14 @@ type StatementSummary = {
   id: string;
   filename: string;
   bank: string;
+  status: string;
+};
+
+type StatementListApiItem = {
+  id: string;
+  filename?: string;
+  bank_code?: string | null;
+  bank_id?: string | null;
   status: string;
 };
 
@@ -61,7 +71,7 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const token = localStorage.getItem("access_token");
+    const token = localStorage.getItem("access_token") || localStorage.getItem("token");
 
     if (!token) {
       router.push("/login");
@@ -70,7 +80,7 @@ export default function DashboardPage() {
 
     const fetchUser = async () => {
       try {
-        const res = await fetch("http://localhost:8000/v1/auth/me", {
+        const res = await fetch(`${API}/v1/auth/me`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -96,20 +106,20 @@ export default function DashboardPage() {
 
   // Load persisted statements from API on page load
   useEffect(() => {
-    const token = localStorage.getItem("access_token");
+    const token = localStorage.getItem("access_token") || localStorage.getItem("token");
     const fetchStatements = async () => {
       try {
-        const res = await fetch("http://localhost:8000/v1/statements?page=1&size=20", {
+        const res = await fetch(`${API}/v1/statements?page=1&size=20`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         if (res.ok) {
           const data = await res.json();
           if (data.data && data.data.items) {
             setStatements(
-              data.data.items.map((stmt: any) => ({
+              data.data.items.map((stmt: StatementListApiItem) => ({
                 id: stmt.id,
-                filename: stmt.file_url?.split("/").pop() || "Unknown",
-                bank: stmt.bank_code || "Unknown",
+                filename: stmt.filename || "Unknown",
+                bank: stmt.bank_code || stmt.bank_id || "Unknown",
                 status: stmt.status,
               }))
             );
@@ -123,7 +133,7 @@ export default function DashboardPage() {
   }, []);
 
   const fetchResult = useCallback(async (statementId: string) => {
-    const res = await fetch(`http://localhost:8000/v1/statements/${statementId}/result`);
+    const res = await fetch(`${API}/v1/statements/${statementId}/result`);
     const data = await res.json();
 
     if (data.success) {
@@ -135,7 +145,7 @@ export default function DashboardPage() {
     if (!uploadedStatementId) return;
 
     const res = await fetch(
-      `http://localhost:8000/v1/statements/${uploadedStatementId}/status`
+      `${API}/v1/statements/${uploadedStatementId}/status`
     );
 
     const data = await res.json();
@@ -188,7 +198,7 @@ export default function DashboardPage() {
       setStatus("uploading");
       setProgress(30);
 
-      const res = await fetch("http://localhost:8000/v1/statements/upload", {
+      const res = await fetch(`${API}/v1/statements/upload`, {
         method: "POST",
         body: formData,
       });

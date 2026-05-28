@@ -1,7 +1,7 @@
 """Pydantic schemas for statements and transactions API."""
 from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 
@@ -10,8 +10,8 @@ class TransactionItem(BaseModel):
     id: str
     statement_id: str
     row_number: Optional[int] = None
-    txn_date: Optional[str] = None
-    value_date: Optional[str] = None
+    txn_date: Optional[date] = None
+    value_date: Optional[date] = None
     narration: Optional[str] = None
     narration_clean: Optional[str] = None
     reference_no: Optional[str] = None
@@ -71,8 +71,10 @@ class BulkUpdateResponse(BaseModel):
 class StatementListItem(BaseModel):
     """Single statement in list response."""
     id: str
+    filename: str = "statement"
     client_id: str
     file_type: str
+    bank_id: Optional[str] = None
     bank_code: Optional[str] = None
     account_number: Optional[str] = None
     account_holder: Optional[str] = None

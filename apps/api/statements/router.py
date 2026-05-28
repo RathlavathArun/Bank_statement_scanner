@@ -1,4 +1,5 @@
 import shutil
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
@@ -27,7 +28,7 @@ DEFAULT_CLIENT_NAME = "Default Client"
 
 # Allowed statement statuses
 ALLOWED_STATUSES = {
-    "UPLOADED", "PARSING", "OCR", "READY_FOR_REVIEW", "REVIEWED", "EXPORTED", "FAILED"
+    "UPLOADED", "PARSING", "OCR", "READY_FOR_REVIEW", "REVIEWED", "EXPORTED", "FAILED", "PARSE_ERROR"
 }
 
 
@@ -141,6 +142,7 @@ async def upload_statement(
             ]
         )
     await db.flush()
+    await notify_status_change(statement.id, statement.status)
 
     return {
         "success": True,
@@ -208,6 +210,7 @@ async def list_statements(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
     status: Optional[str] = None,
+    bank_id: Optional[str] = None,
     bank_code: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -216,11 +219,12 @@ async def list_statements(
     
     if status:
         query = query.where(Statement.status == status)
-    if bank_code:
-        query = query.where(Statement.bank_code == bank_code)
+    selected_bank = bank_id or bank_code
+    if selected_bank:
+        query = query.where(Statement.bank_code == selected_bank)
     
     # Get total count
-    count_result = await db.execute(select(func.count(Statement.id)).select_from(Statement))
+    count_result = await db.execute(select(func.count()).select_from(query.subquery()))
     total = count_result.scalar_one()
     
     # Get paginated results
@@ -238,8 +242,10 @@ async def list_statements(
         
         items.append(StatementListItem(
             id=stmt.id,
+            filename=stmt.metadata_.get("original_filename") or Path(stmt.file_url).name or "statement",
             client_id=stmt.client_id,
             file_type=stmt.file_type,
+            bank_id=stmt.bank_code,
             bank_code=stmt.bank_code,
             account_number=stmt.account_number,
             account_holder=stmt.account_holder,
@@ -293,17 +299,16 @@ async def list_transactions(
             query = query.where(Transaction.credit.isnot(None))
     
     if date_from:
-        query = query.where(Transaction.txn_date >= date_from)
+        query = query.where(Transaction.txn_date >= datetime.strptime(date_from, "%Y-%m-%d").date())
     if date_to:
-        query = query.where(Transaction.txn_date <= date_to)
+        query = query.where(Transaction.txn_date <= datetime.strptime(date_to, "%Y-%m-%d").date())
     
     if search:
         query = query.where(Transaction.narration.ilike(f"%{search}%"))
     
     # Get total count
-    count_result = await db.execute(
-        select(func.count(Transaction.id)).select_from(query.subquery())
-    )
+    count_query = query.order_by(None).subquery()
+    count_result = await db.execute(select(func.count()).select_from(count_query))
     total = count_result.scalar_one()
     
     # Get paginated results

@@ -1,5 +1,6 @@
 """Tests for transaction CRUD endpoints."""
 import pytest
+import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 from decimal import Decimal
@@ -9,7 +10,7 @@ from db.models import Statement, Transaction, Client, Firm
 from db.database import get_db
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def seeded_statement(db: AsyncSession):
     """Create a test statement with 5 transactions."""
     # Create firm and client
