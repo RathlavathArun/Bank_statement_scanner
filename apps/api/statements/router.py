@@ -10,7 +10,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
-from db.models import Client, Firm, Statement, Transaction
+from db.models import Client, Firm, LLMCache, Statement, Transaction
 from statements.parser import PDFReadError, StatementParserError, parse_statement
 from statements.ledger_memory import (
     remember_ledger_mapping,
@@ -478,7 +478,9 @@ async def enrich_statement_transactions(
     query = select(Transaction).where(Transaction.statement_id == statement_id)
     if body.transaction_ids:
         query = query.where(Transaction.id.in_(body.transaction_ids))
-    if body.only_missing:
+
+    # When force=True skip the only_missing filter — re-enrich everything
+    if body.only_missing and not body.force:
         query = query.where(
             (Transaction.narration_clean.is_(None))
             | (Transaction.payment_mode.is_(None))
@@ -488,6 +490,16 @@ async def enrich_statement_transactions(
 
     result = await db.execute(query.order_by(Transaction.row_number).limit(body.limit))
     transactions = result.scalars().all()
+
+    # When force=True, delete stale cache entries so fresh scoring runs
+    if body.force and transactions:
+        from statements.llm_tracking import content_hash_for_transaction
+        stale_hashes = [content_hash_for_transaction(tx) for tx in transactions]
+        await db.execute(
+            __import__("sqlalchemy").delete(LLMCache).where(LLMCache.content_hash.in_(stale_hashes))
+        )
+        await db.flush()
+
     enrichments = await enrich_transactions_with_tracking(db, list(transactions), statement_id)
     by_id = {item.transaction_id: item for item in enrichments}
 

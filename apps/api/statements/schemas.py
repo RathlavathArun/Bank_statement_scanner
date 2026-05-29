@@ -116,3 +116,4 @@ class EnrichTransactionsRequest(BaseModel):
     transaction_ids: Optional[List[str]] = None
     only_missing: bool = True
     limit: int = 50
+    force: bool = False  # When True, clears stale cache and re-runs scoring from scratch

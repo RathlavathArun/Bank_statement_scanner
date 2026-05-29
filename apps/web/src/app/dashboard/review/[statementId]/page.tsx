@@ -235,12 +235,12 @@ export default function ReviewPage() {
       const res = await fetch(`${API}/v1/statements/${statementId}/transactions/enrich`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ only_missing: true, limit: 200 }),
+        // force:true clears stale cache so confidence is always recomputed fresh
+        body: JSON.stringify({ only_missing: false, force: true, limit: 200 }),
       });
       if (!res.ok) throw new Error("Enrichment failed");
       const data = (await res.json()).data;
       addToast("success", `Enriched ${data.updated} transactions`);
-      // Reload to pick up narration_clean, payment_mode, confidence etc.
       await loadTransactions();
     } catch (error) {
       addToast("error", error instanceof Error ? error.message : "Enrichment failed");
