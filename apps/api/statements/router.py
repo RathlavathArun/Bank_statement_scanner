@@ -129,9 +129,9 @@ async def _background_enrich(statement_id: str, transaction_ids: list[str]) -> N
 
 @router.post("/upload")
 async def upload_statement(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     bank: str | None = Form(default=None),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: AsyncSession = Depends(get_db),
 ):
     original_filename = file.filename or "statement"
