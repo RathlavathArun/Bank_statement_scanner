@@ -12,6 +12,8 @@ type DocumentProps = {
   file: string;
   loading: ReactNode;
   error: ReactNode;
+  onLoadError?: () => void;
+  onSourceError?: () => void;
   onLoadSuccess: (meta: { numPages: number }) => void;
   children: ReactNode;
 };
@@ -136,6 +138,8 @@ export function PDFViewer({ fileUrl }: PDFViewerProps) {
             file={fileUrl}
             loading={loading}
             error={fallback}
+            onLoadError={() => setViewerError(true)}
+            onSourceError={() => setViewerError(true)}
             onLoadSuccess={({ numPages: loadedPages }) => {
               setNumPages(loadedPages);
               setCurrentPage(1);

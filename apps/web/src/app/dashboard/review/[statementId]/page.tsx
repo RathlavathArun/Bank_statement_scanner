@@ -8,12 +8,14 @@ import { PDFViewer } from "@/components/PDFViewer";
 import { TransactionTable } from "@/components/TransactionTable";
 import { useUndoRedo } from "@/components/useUndoRedo";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = "/api";
 
 type StatementMeta = {
   id: string;
   filename: string;
   bank: string;
+  file_type?: string;
+  error?: string | null;
   status: string;
 };
 
@@ -44,6 +46,8 @@ type StatusPayload = {
   bank?: string;
   bank_code?: string;
   bank_id?: string;
+  file_type?: string;
+  error?: string | null;
   status: string;
 };
 
@@ -95,6 +99,7 @@ export default function ReviewPage() {
     canUndo,
     canRedo,
   } = useUndoRedo<Transaction[]>([]);
+  const [enriching, setEnriching] = useState(false);
 
   const addToast = useCallback((type: Toast["type"], message: string) => {
     const id = Date.now();
@@ -119,6 +124,8 @@ export default function ReviewPage() {
       id: data.id,
       filename: data.filename ?? "statement",
       bank: data.bank ?? data.bank_code ?? data.bank_id ?? "Unknown",
+      file_type: data.file_type,
+      error: data.error,
       status: data.status,
     });
   }, [statementId]);
@@ -184,7 +191,10 @@ export default function ReviewPage() {
     return () => socket.close();
   }, [statementId]);
 
+  const isReadOnly = statement?.status === "REVIEWED";
+
   const updateTransaction = async (txId: string, changes: Partial<Transaction>) => {
+    if (isReadOnly) { addToast("error", "Statement is reviewed and locked — no edits allowed."); return; }
     const before = transactions;
     const next = before.map((tx) => (tx.id === txId ? { ...tx, ...changes } : tx));
     setTransactions(next);
@@ -203,6 +213,46 @@ export default function ReviewPage() {
     }
   };
 
+  const bulkUpdateTransactions = async (txIds: string[], changes: Partial<Transaction>) => {
+    if (isReadOnly) { addToast("error", "Statement is reviewed and locked — no edits allowed."); return; }
+    const before = transactions;
+    const next = before.map((tx) => (txIds.includes(tx.id) ? { ...tx, ...changes } : tx));
+    setTransactions(next);
+
+    try {
+      const res = await fetch(`${API}/v1/statements/${statementId}/transactions/bulk-update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ updates: txIds.map((id) => ({ id, ...changes })) }),
+      });
+      if (!res.ok) throw new Error("Bulk save failed");
+      addToast("success", `Updated ${txIds.length} transactions`);
+    } catch (error) {
+      resetTransactions(before);
+      addToast("error", error instanceof Error ? error.message : "Bulk save failed");
+    }
+  };
+
+  const enrichTransactions = async () => {
+    setEnriching(true);
+    try {
+      const res = await fetch(`${API}/v1/statements/${statementId}/transactions/enrich`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        // force:true clears stale cache so confidence is always recomputed fresh
+        body: JSON.stringify({ only_missing: false, force: true, limit: 200 }),
+      });
+      if (!res.ok) throw new Error("Enrichment failed");
+      const data = (await res.json()).data;
+      addToast("success", `Enriched ${data.updated} transactions`);
+      await loadTransactions();
+    } catch (error) {
+      addToast("error", error instanceof Error ? error.message : "Enrichment failed");
+    } finally {
+      setEnriching(false);
+    }
+  };
+
   const markReviewed = async () => {
     try {
       const res = await fetch(`${API}/v1/statements/${statementId}/status`, {
@@ -217,6 +267,28 @@ export default function ReviewPage() {
       addToast("error", error instanceof Error ? error.message : "Could not mark reviewed");
     }
   };
+
+  const isPdf = statement?.file_type?.toLowerCase() === "pdf";
+  const filePreview = isPdf ? (
+    <PDFViewer fileUrl={fileUrl} />
+  ) : (
+    <div
+      data-testid="file-preview-fallback"
+      className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-lg border border-white/10 bg-black/30 p-6 text-center text-white backdrop-blur-xl"
+    >
+      <p className="text-lg font-semibold">PDF preview is available for PDF files</p>
+      <p className="mt-2 max-w-md text-sm text-slate-300">
+        This statement is a {statement?.file_type?.toUpperCase() || "non-PDF"} file. Review extracted transactions on the right or download the original file.
+      </p>
+      <a
+        className="mt-5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+        href={fileUrl}
+        download
+      >
+        Download original
+      </a>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
@@ -256,6 +328,14 @@ export default function ReviewPage() {
               Redo
             </button>
             <button
+              className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium disabled:opacity-40"
+              disabled={enriching || isReadOnly}
+              onClick={enrichTransactions}
+              title={isReadOnly ? "Statement is locked" : "Run AI enrichment"}
+            >
+              {enriching ? "Enriching…" : "✨ Enrich AI"}
+            </button>
+            <button
               className="rounded-lg bg-purple-600 px-3 py-2 text-sm font-medium disabled:opacity-40"
               disabled={statement?.status === "REVIEWED"}
               onClick={markReviewed}
@@ -270,6 +350,17 @@ export default function ReviewPage() {
       </header>
 
       <main className="h-[calc(100vh-65px)]">
+        {isReadOnly && (
+          <div className="flex items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-200">
+            <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+            <span><strong>Read-only</strong> — This statement is reviewed and locked. No edits are allowed.</span>
+          </div>
+        )}
+        {statement?.error && (
+          <div className="border-b border-yellow-500/20 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-100">
+            {statement.error}
+          </div>
+        )}
         <div className="grid grid-cols-2 border-b border-white/10 sm:hidden">
           <button
             className={`py-3 text-sm ${activeTab === "transactions" ? "bg-white/10" : ""}`}
@@ -287,7 +378,7 @@ export default function ReviewPage() {
 
         <div className="hidden h-full grid-cols-[40%_60%] sm:grid">
           <section className="h-full overflow-hidden border-r border-white/10 p-4">
-            <PDFViewer fileUrl={fileUrl} />
+            {filePreview}
           </section>
           <section className="h-full overflow-auto p-4">
             <TransactionTable
@@ -303,13 +394,14 @@ export default function ReviewPage() {
                 setPageSize(size);
                 setPage(1);
               }}
+              onBulkUpdate={bulkUpdateTransactions}
             />
           </section>
         </div>
 
         <div className="h-full p-4 sm:hidden">
           {activeTab === "pdf" ? (
-            <PDFViewer fileUrl={fileUrl} />
+            filePreview
           ) : (
             <TransactionTable
               statementId={statementId}
@@ -324,6 +416,7 @@ export default function ReviewPage() {
                 setPageSize(size);
                 setPage(1);
               }}
+              onBulkUpdate={bulkUpdateTransactions}
             />
           )}
         </div>

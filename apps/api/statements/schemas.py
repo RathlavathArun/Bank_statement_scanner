@@ -109,3 +109,11 @@ class PaginatedStatements(BaseModel):
 class StatementStatusUpdate(BaseModel):
     """Request to update statement status."""
     status: str
+
+
+class EnrichTransactionsRequest(BaseModel):
+    """Request to enrich parsed transaction narrations."""
+    transaction_ids: Optional[List[str]] = None
+    only_missing: bool = True
+    limit: int = 50
+    force: bool = False  # When True, clears stale cache and re-runs scoring from scratch

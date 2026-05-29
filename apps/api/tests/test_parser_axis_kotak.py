@@ -60,6 +60,20 @@ def test_kotak_fingerprint_keywords():
     assert any("kotak" in k.lower() for k in keywords)
 
 
+def test_sbi_template_exists():
+    """SBI YAML template file exists."""
+    template = load_bank_template("sbi")
+    assert template is not None
+    assert template.get("bank_code") == "SBI"
+
+
+def test_sbi_fingerprint_keywords():
+    """SBI fingerprint contains expected keywords."""
+    template = load_bank_template("sbi")
+    keywords = template["fingerprint"]["keywords"]
+    assert any("sbi" in k.lower() or "state bank" in k.lower() for k in keywords)
+
+
 def test_merge_continuation_rows_basic():
     """Merge 2 continuation rows into 1."""
     rows = [

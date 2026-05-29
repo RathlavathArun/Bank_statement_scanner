@@ -15,6 +15,7 @@ os.environ["DEBUG"] = "False"
 from fastapi.testclient import TestClient  # noqa: E402
 
 from main import app  # noqa: E402
+from statements.parser import StatementParserError  # noqa: E402
 
 
 def test_upload_status_and_result_use_statement_id():
@@ -37,11 +38,13 @@ def test_upload_status_and_result_use_statement_id():
         statement = upload_body["data"]
         assert statement["id"]
         assert statement["filename"] == "sample.csv"
+        assert statement["file_type"] == "csv"
         assert statement["status"] == "READY_FOR_REVIEW"
 
         status_response = client.get(f"/v1/statements/{statement['id']}/status")
         assert status_response.status_code == 200
         assert status_response.json()["data"]["id"] == statement["id"]
+        assert status_response.json()["data"]["file_type"] == "csv"
         assert status_response.json()["data"]["status"] == "READY_FOR_REVIEW"
 
         result_response = client.get(f"/v1/statements/{statement['id']}/result")
@@ -96,3 +99,38 @@ def test_unsupported_upload_is_saved_as_failed_statement():
         result_response = client.get(f"/v1/statements/{statement['id']}/result")
         assert result_response.status_code == 200
         assert result_response.json()["data"]["transactions"] == []
+
+
+def test_invalid_pdf_upload_is_saved_as_failed_statement():
+    with TestClient(app) as client:
+        upload_response = client.post(
+            "/v1/statements/upload",
+            data={"bank": "HDFC"},
+            files={"file": ("bad.pdf", b"not actually a pdf", "application/pdf")},
+        )
+
+        assert upload_response.status_code == 200
+        statement = upload_response.json()["data"]
+        assert statement["file_type"] == "pdf"
+        assert statement["status"] == "FAILED"
+        assert "Could not read this PDF" in statement["error"]
+
+
+def test_readable_pdf_parse_warning_still_allows_review(monkeypatch):
+    def fake_parse_statement(file_path, bank):
+        raise StatementParserError("PDF uploaded successfully, but no transaction rows matched the current bank template.")
+
+    monkeypatch.setattr("statements.router.parse_statement", fake_parse_statement)
+
+    with TestClient(app) as client:
+        upload_response = client.post(
+            "/v1/statements/upload",
+            data={"bank": "SBI"},
+            files={"file": ("statement.pdf", b"%PDF-1.4\n%%EOF", "application/pdf")},
+        )
+
+        assert upload_response.status_code == 200
+        statement = upload_response.json()["data"]
+        assert statement["file_type"] == "pdf"
+        assert statement["status"] == "READY_FOR_REVIEW"
+        assert "no transaction rows" in statement["error"]

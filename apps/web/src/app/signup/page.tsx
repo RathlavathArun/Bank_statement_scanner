@@ -24,20 +24,20 @@ export default function SignupPage() {
     const firm_name = formData.get("firm_name");
 
     try {
-      const res = await fetch("http://localhost:8000/v1/auth/signup", {
+      const res = await fetch("/api/v1/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password, full_name, firm_name }),
       });
       const data = await res.json();
 
-      if (data.success) {
+      if (res.ok && data.success) {
         localStorage.setItem("access_token", data.data.tokens.access_token);
         router.push("/dashboard");
       } else {
-        setError(data.error || "Signup failed");
+        setError(data.detail || data.error || data.message || "Signup failed");
       }
-    } catch (err) {
+    } catch {
       setError("An unexpected error occurred.");
     } finally {
       setLoading(false);

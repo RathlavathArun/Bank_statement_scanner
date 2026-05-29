@@ -22,20 +22,20 @@ export default function LoginPage() {
     const password = formData.get("password");
 
     try {
-      const res = await fetch("http://localhost:8000/v1/auth/login", {
+      const res = await fetch("/api/v1/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
 
-      if (data.success) {
+      if (res.ok && data.success) {
         localStorage.setItem("access_token", data.data.tokens.access_token);
         router.push("/dashboard");
       } else {
-        setError(data.error || "Login failed");
+        setError(data.detail || data.error || data.message || "Login failed");
       }
-    } catch (err) {
+    } catch {
       setError("An unexpected error occurred.");
     } finally {
       setLoading(false);
