@@ -99,6 +99,7 @@ export default function ReviewPage() {
     canUndo,
     canRedo,
   } = useUndoRedo<Transaction[]>([]);
+  const [enriching, setEnriching] = useState(false);
 
   const addToast = useCallback((type: Toast["type"], message: string) => {
     const id = Date.now();
@@ -218,13 +219,33 @@ export default function ReviewPage() {
       const res = await fetch(`${API}/v1/statements/${statementId}/transactions/bulk-update`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ ids: txIds, updates: changes }),
+        body: JSON.stringify({ updates: txIds.map((id) => ({ id, ...changes })) }),
       });
       if (!res.ok) throw new Error("Bulk save failed");
       addToast("success", `Updated ${txIds.length} transactions`);
     } catch (error) {
       resetTransactions(before);
       addToast("error", error instanceof Error ? error.message : "Bulk save failed");
+    }
+  };
+
+  const enrichTransactions = async () => {
+    setEnriching(true);
+    try {
+      const res = await fetch(`${API}/v1/statements/${statementId}/transactions/enrich`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ only_missing: true, limit: 200 }),
+      });
+      if (!res.ok) throw new Error("Enrichment failed");
+      const data = (await res.json()).data;
+      addToast("success", `Enriched ${data.updated} transactions`);
+      // Reload to pick up narration_clean, payment_mode, confidence etc.
+      await loadTransactions();
+    } catch (error) {
+      addToast("error", error instanceof Error ? error.message : "Enrichment failed");
+    } finally {
+      setEnriching(false);
     }
   };
 
@@ -301,6 +322,14 @@ export default function ReviewPage() {
             </button>
             <button className="rounded-lg bg-white/10 px-3 py-2 text-sm disabled:opacity-40" disabled={!canRedo} onClick={redo}>
               Redo
+            </button>
+            <button
+              className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium disabled:opacity-40"
+              disabled={enriching}
+              onClick={enrichTransactions}
+              title="Run AI enrichment (narration clean-up, ledger suggestions, confidence scores)"
+            >
+              {enriching ? "Enriching…" : "✨ Enrich AI"}
             </button>
             <button
               className="rounded-lg bg-purple-600 px-3 py-2 text-sm font-medium disabled:opacity-40"

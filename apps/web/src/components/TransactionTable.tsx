@@ -13,6 +13,7 @@ interface Transaction {
   id: string;
   txn_date?: string;
   narration?: string;
+  narration_clean?: string;
   debit?: number | string | null;
   credit?: number | string | null;
   balance?: number | string | null;
@@ -47,6 +48,8 @@ function amountValue(value: number | string | null | undefined) {
   return 0;
 }
 
+const API = "/api";
+
 export function TransactionTable({
   statementId,
   transactions,
@@ -59,7 +62,6 @@ export function TransactionTable({
   onPageSizeChange,
   onBulkUpdate,
 }: TransactionTableProps) {
-  void statementId;
   const [editingCell, setEditingCell] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [searchText, setSearchText] = useState("");
@@ -70,6 +72,7 @@ export function TransactionTable({
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [rowSelection, setRowSelection] = useState({});
   const [bulkLedger, setBulkLedger] = useState("");
+  const [ledgerSuggestions, setLedgerSuggestions] = useState<{ ledger_name: string; score: number }[]>([]);
 
   const filtered = useMemo(() => {
     let result = [...transactions];
@@ -107,11 +110,24 @@ export function TransactionTable({
   const startEdit = (txId: string, field: EditableField, value: string | undefined) => {
     setEditingCell(`${txId}:${field}`);
     setEditValue(value || "");
+    if (field === "confirmed_ledger") {
+      // Fetch ledger suggestions when user begins editing ledger cell
+      setLedgerSuggestions([]);
+      fetch(`${API}/v1/statements/${statementId}/transactions/${txId}/ledger-suggestions`)
+        .then((res) => res.ok ? res.json() : null)
+        .then((data) => {
+          if (data?.data?.suggestions) {
+            setLedgerSuggestions(data.data.suggestions);
+          }
+        })
+        .catch(() => {/* no-op */});
+    }
   };
 
   const saveEdit = (txId: string, field: EditableField) => {
     onUpdate(txId, { [field]: editValue } as Partial<Transaction>);
     setEditingCell(null);
+    setLedgerSuggestions([]);
   };
 
   const handleKeyDown = (event: React.KeyboardEvent, txId: string, field: EditableField) => {
@@ -119,6 +135,7 @@ export function TransactionTable({
       saveEdit(txId, field);
     } else if (event.key === "Escape") {
       setEditingCell(null);
+      setLedgerSuggestions([]);
     }
   };
 
@@ -184,7 +201,14 @@ export function TransactionTable({
                   className="w-full rounded border border-white/20 bg-white/10 px-2 py-1 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                 />
               ) : (
-                <span title={getValue()}>{getValue()?.substring(0, 30)}</span>
+                <div>
+                  <span title={getValue()}>{getValue()?.substring(0, 30)}</span>
+                  {tx.narration_clean && tx.narration_clean !== getValue() && (
+                    <p className="text-xs text-indigo-400 truncate" title={tx.narration_clean}>
+                      {tx.narration_clean.substring(0, 28)}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           );
@@ -221,23 +245,61 @@ export function TransactionTable({
         header: "Ledger",
         cell: ({ row, getValue }) => {
           const tx = row.original;
+          const isEditing = editingCell === `${tx.id}:confirmed_ledger`;
           return (
-            <div
-              className="cursor-pointer text-gray-300 hover:text-white"
-              onClick={() => startEdit(tx.id, "confirmed_ledger", getValue())}
-            >
-              {editingCell === `${tx.id}:confirmed_ledger` ? (
-                <input
-                  autoFocus
-                  type="text"
-                  value={editValue}
-                  onChange={(event) => setEditValue(event.target.value)}
-                  onBlur={() => saveEdit(tx.id, "confirmed_ledger")}
-                  onKeyDown={(event) => handleKeyDown(event, tx.id, "confirmed_ledger")}
-                  className="w-full rounded border border-white/20 bg-white/10 px-2 py-1 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-                />
+            <div className="relative cursor-pointer text-gray-300 hover:text-white">
+              {isEditing ? (
+                <div>
+                  <input
+                    autoFocus
+                    type="text"
+                    value={editValue}
+                    onChange={(event) => setEditValue(event.target.value)}
+                    onBlur={() => saveEdit(tx.id, "confirmed_ledger")}
+                    onKeyDown={(event) => handleKeyDown(event, tx.id, "confirmed_ledger")}
+                    className="w-full rounded border border-white/20 bg-white/10 px-2 py-1 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  />
+                  {ledgerSuggestions.length > 0 && (
+                    <ul className="absolute z-50 mt-1 w-56 rounded-lg border border-white/10 bg-slate-900 shadow-xl text-xs">
+                      {ledgerSuggestions.slice(0, 5).map((s) => (
+                        <li
+                          key={s.ledger_name}
+                          className="flex items-center justify-between px-3 py-1.5 hover:bg-white/10 cursor-pointer"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setEditValue(s.ledger_name);
+                            onUpdate(tx.id, { confirmed_ledger: s.ledger_name });
+                            setEditingCell(null);
+                            setLedgerSuggestions([]);
+                          }}
+                        >
+                          <span className="text-white">{s.ledger_name}</span>
+                          <span className="text-gray-500">{Math.round(s.score * 100)}%</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {tx.suggested_ledger && !getValue() && (
+                    <p className="mt-1 text-xs text-indigo-400">
+                      AI: <button
+                        className="hover:text-indigo-300 underline"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          setEditValue(tx.suggested_ledger!);
+                          onUpdate(tx.id, { confirmed_ledger: tx.suggested_ledger });
+                          setEditingCell(null);
+                        }}
+                      >{tx.suggested_ledger}</button>
+                    </p>
+                  )}
+                </div>
               ) : (
-                <span>{getValue() || "-"}</span>
+                <div onClick={() => startEdit(tx.id, "confirmed_ledger", getValue())}>
+                  <span>{getValue() || <span className="text-gray-500 italic text-xs">click to assign</span>}</span>
+                  {!getValue() && tx.suggested_ledger && (
+                    <p className="text-xs text-indigo-400 truncate">{tx.suggested_ledger}</p>
+                  )}
+                </div>
               )}
             </div>
           );

@@ -4,7 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,10 +99,39 @@ def serialize_transaction(transaction: Transaction) -> dict:
     }
 
 
+async def _background_enrich(statement_id: str, transaction_ids: list[str]) -> None:
+    """Run heuristic / Claude enrichment for freshly parsed transactions."""
+    from db.database import async_session  # import here to avoid circular at module load
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(Transaction)
+            .where(
+                Transaction.statement_id == statement_id,
+                Transaction.id.in_(transaction_ids),
+            )
+            .order_by(Transaction.row_number)
+        )
+        transactions = result.scalars().all()
+        if not transactions:
+            return
+
+        enrichments = await enrich_transactions_with_tracking(
+            session, list(transactions), statement_id
+        )
+        by_id = {e.transaction_id: e for e in enrichments}
+        for tx in transactions:
+            enrichment = by_id.get(tx.id)
+            if enrichment:
+                apply_enrichment(tx, enrichment)
+        await session.commit()
+
+
 @router.post("/upload")
 async def upload_statement(
     file: UploadFile = File(...),
     bank: str | None = Form(default=None),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: AsyncSession = Depends(get_db),
 ):
     original_filename = file.filename or "statement"
@@ -127,11 +156,13 @@ async def upload_statement(
         shutil.copyfileobj(file.file, buffer)
 
     statement.status = "PARSING"
+    enrich_tx_ids: list[str] = []
     try:
         parsed = parse_statement(file_path, bank)
     except PDFReadError as exc:
         statement.status = "FAILED"
         statement.error_message = str(exc)
+        await db.flush()
     except StatementParserError as exc:
         statement.status = "READY_FOR_REVIEW" if statement.file_type == "pdf" else "FAILED"
         statement.error_message = str(exc)
@@ -141,30 +172,35 @@ async def upload_statement(
             "parse_warning": str(exc),
             "row_count": 0,
         }
+        await db.flush()
     else:
         statement.metadata_ = {
             **statement.metadata_,
             **parsed.metadata,
         }
         statement.status = "READY_FOR_REVIEW"
-        db.add_all(
-            [
-                Transaction(
-                    statement_id=statement.id,
-                    row_number=txn.row_number,
-                    txn_date=txn.txn_date,
-                    value_date=txn.value_date,
-                    narration=txn.narration,
-                    reference_no=txn.reference_no,
-                    debit=txn.debit,
-                    credit=txn.credit,
-                    balance=txn.balance,
-                )
-                for txn in parsed.transactions
-            ]
-        )
-    await db.flush()
+        new_txns = [
+            Transaction(
+                statement_id=statement.id,
+                row_number=txn.row_number,
+                txn_date=txn.txn_date,
+                value_date=txn.value_date,
+                narration=txn.narration,
+                reference_no=txn.reference_no,
+                debit=txn.debit,
+                credit=txn.credit,
+                balance=txn.balance,
+            )
+            for txn in parsed.transactions
+        ]
+        db.add_all(new_txns)
+        await db.flush()
+        enrich_tx_ids = [tx.id for tx in new_txns]
+
     await notify_status_change(statement.id, statement.status)
+
+    if enrich_tx_ids:
+        background_tasks.add_task(_background_enrich, statement.id, enrich_tx_ids)
 
     return {
         "success": True,
