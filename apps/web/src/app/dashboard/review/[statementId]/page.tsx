@@ -191,7 +191,10 @@ export default function ReviewPage() {
     return () => socket.close();
   }, [statementId]);
 
+  const isReadOnly = statement?.status === "REVIEWED";
+
   const updateTransaction = async (txId: string, changes: Partial<Transaction>) => {
+    if (isReadOnly) { addToast("error", "Statement is reviewed and locked — no edits allowed."); return; }
     const before = transactions;
     const next = before.map((tx) => (tx.id === txId ? { ...tx, ...changes } : tx));
     setTransactions(next);
@@ -211,6 +214,7 @@ export default function ReviewPage() {
   };
 
   const bulkUpdateTransactions = async (txIds: string[], changes: Partial<Transaction>) => {
+    if (isReadOnly) { addToast("error", "Statement is reviewed and locked — no edits allowed."); return; }
     const before = transactions;
     const next = before.map((tx) => (txIds.includes(tx.id) ? { ...tx, ...changes } : tx));
     setTransactions(next);
@@ -325,9 +329,9 @@ export default function ReviewPage() {
             </button>
             <button
               className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium disabled:opacity-40"
-              disabled={enriching}
+              disabled={enriching || isReadOnly}
               onClick={enrichTransactions}
-              title="Run AI enrichment (narration clean-up, ledger suggestions, confidence scores)"
+              title={isReadOnly ? "Statement is locked" : "Run AI enrichment"}
             >
               {enriching ? "Enriching…" : "✨ Enrich AI"}
             </button>
@@ -346,6 +350,12 @@ export default function ReviewPage() {
       </header>
 
       <main className="h-[calc(100vh-65px)]">
+        {isReadOnly && (
+          <div className="flex items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-200">
+            <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+            <span><strong>Read-only</strong> — This statement is reviewed and locked. No edits are allowed.</span>
+          </div>
+        )}
         {statement?.error && (
           <div className="border-b border-yellow-500/20 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-100">
             {statement.error}
