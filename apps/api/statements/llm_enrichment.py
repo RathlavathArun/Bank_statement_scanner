@@ -117,20 +117,55 @@ def score_confidence(
     suggested_ledger: str | None,
     transaction: Transaction,
 ) -> Decimal:
-    score = Decimal("0.35")
-    if narration_clean:
-        score += Decimal("0.15")
+    """
+    Score how confident the heuristic enrichment is.
+
+    Criteria (quality-based, not just presence-based):
+    - payment_mode detected via explicit keyword  → high boost
+    - suggested_ledger is a SPECIFIC match        → high boost
+    - suggested_ledger is just generic fallback   → small boost
+    - narration_clean meaningfully shorter        → small boost (noise removed)
+    - counterparty resolved to a real name        → small boost
+    - Very short / single-word narration          → penalty (ambiguous)
+    - No payment mode detected                    → penalty
+    """
+    narration = transaction.narration or ""
+    score = Decimal("0.40")  # base
+
+    # ── Payment mode ──────────────────────────────────────────────────────────
     if payment_mode:
-        score += Decimal("0.15")
-    if counterparty:
-        score += Decimal("0.15")
-    if suggested_ledger:
-        score += Decimal("0.10")
-    if transaction.debit is not None or transaction.credit is not None:
+        score += Decimal("0.20")   # explicit keyword match is a strong signal
+    else:
+        score -= Decimal("0.10")   # unknown mode = uncertain
+
+    # ── Ledger specificity ────────────────────────────────────────────────────
+    generic_ledgers = {"Expenses", "Receipts"}
+    if suggested_ledger and suggested_ledger not in generic_ledgers:
+        score += Decimal("0.20")   # matched a real category (Salary, Food, etc.)
+    elif suggested_ledger in generic_ledgers:
+        score += Decimal("0.05")   # only a catch-all, low signal
+    else:
+        score -= Decimal("0.05")   # no ledger suggestion at all
+
+    # ── Narration quality ─────────────────────────────────────────────────────
+    if narration_clean and len(narration_clean.strip()) > 5:
+        # Reward if cleaning actually removed noise (string got shorter)
+        ratio = len(narration_clean) / max(len(narration), 1)
+        if ratio < 0.85:
+            score += Decimal("0.10")   # significant noise removed
+        else:
+            score += Decimal("0.05")   # minor clean-up
+
+    # ── Counterparty ──────────────────────────────────────────────────────────
+    if counterparty and len(counterparty.strip()) > 2:
         score += Decimal("0.05")
-    if transaction.balance is not None:
-        score += Decimal("0.05")
-    return min(score, Decimal("0.950")).quantize(Decimal("0.001"))
+
+    # ── Short / ambiguous narration penalty ───────────────────────────────────
+    words = len(narration.split())
+    if words <= 2:
+        score -= Decimal("0.10")   # e.g. "TFR" or "ATM" alone is very ambiguous
+
+    return max(Decimal("0.10"), min(score, Decimal("0.950"))).quantize(Decimal("0.001"))
 
 
 def heuristic_enrich(transaction: Transaction) -> EnrichmentResult:
