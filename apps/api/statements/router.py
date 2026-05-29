@@ -11,10 +11,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
 from db.models import Client, Firm, Statement, Transaction
-from statements.parser import StatementParserError, parse_statement
+from statements.parser import PDFReadError, StatementParserError, parse_statement
+from statements.ledger_memory import (
+    remember_ledger_mapping,
+    serialize_suggestion,
+    suggest_ledgers,
+)
+from statements.llm_enrichment import (
+    apply_enrichment,
+    enrich_transactions_with_tracking,
+    serialize_enrichment,
+)
+from statements.llm_tracking import serialize_usage, summarize_usage
 from statements.schemas import (
     TransactionItem, TransactionUpdate, BulkUpdateRequest, BulkUpdateResponse,
     StatementListItem, PaginatedTransactions, PaginatedStatements, StatementStatusUpdate,
+    EnrichTransactionsRequest,
 )
 from statements.websocket import notify_status_change
 
@@ -67,6 +79,7 @@ def serialize_statement(statement: Statement) -> dict:
         "id": statement.id,
         "filename": statement.metadata_.get("original_filename"),
         "bank": statement.bank_code,
+        "file_type": statement.file_type,
         "status": statement.status,
         "path": statement.file_url,
         "error": statement.error_message,
@@ -116,9 +129,18 @@ async def upload_statement(
     statement.status = "PARSING"
     try:
         parsed = parse_statement(file_path, bank)
-    except StatementParserError as exc:
+    except PDFReadError as exc:
         statement.status = "FAILED"
         statement.error_message = str(exc)
+    except StatementParserError as exc:
+        statement.status = "READY_FOR_REVIEW" if statement.file_type == "pdf" else "FAILED"
+        statement.error_message = str(exc)
+        statement.metadata_ = {
+            **statement.metadata_,
+            "parser": "pdf_text",
+            "parse_warning": str(exc),
+            "row_count": 0,
+        }
     else:
         statement.metadata_ = {
             **statement.metadata_,
@@ -349,10 +371,21 @@ async def update_transaction(
     
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
+
+    stmt = await db.get(Statement, statement_id)
     
     # Apply updates (only present fields)
-    for field, value in body.model_dump(exclude_unset=True).items():
+    updates = body.model_dump(exclude_unset=True)
+    for field, value in updates.items():
         setattr(tx, field, value)
+
+    if stmt and updates.get("confirmed_ledger"):
+        await remember_ledger_mapping(
+            db=db,
+            transaction=tx,
+            ledger_name=updates["confirmed_ledger"],
+            client_id=stmt.client_id,
+        )
     
     await db.commit()
     await db.refresh(tx)
@@ -360,6 +393,103 @@ async def update_transaction(
     return {
         "success": True,
         "data": TransactionItem.model_validate(tx).model_dump()
+    }
+
+
+@router.get("/{statement_id}/transactions/{transaction_id}/ledger-suggestions", response_model=dict)
+async def get_ledger_suggestions(
+    statement_id: str,
+    transaction_id: str,
+    limit: int = Query(5, ge=1, le=20),
+    db: AsyncSession = Depends(get_db),
+):
+    """Suggest ledgers from learned client mappings and optional Qdrant memory."""
+    stmt = await db.get(Statement, statement_id)
+    if not stmt:
+        raise HTTPException(status_code=404, detail="Statement not found")
+
+    result = await db.execute(
+        select(Transaction).where(
+            Transaction.id == transaction_id,
+            Transaction.statement_id == statement_id,
+        )
+    )
+    tx = result.scalar_one_or_none()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    suggestions = await suggest_ledgers(db, tx, stmt.client_id, limit=limit)
+    return {
+        "success": True,
+        "data": {
+            "transaction_id": tx.id,
+            "suggestions": [serialize_suggestion(item) for item in suggestions],
+        },
+    }
+
+
+@router.post("/{statement_id}/transactions/enrich", response_model=dict)
+async def enrich_statement_transactions(
+    statement_id: str,
+    body: EnrichTransactionsRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Enrich transaction narrations with Claude when configured, otherwise local rules."""
+    stmt = await db.get(Statement, statement_id)
+    if not stmt:
+        raise HTTPException(status_code=404, detail="Statement not found")
+
+    query = select(Transaction).where(Transaction.statement_id == statement_id)
+    if body.transaction_ids:
+        query = query.where(Transaction.id.in_(body.transaction_ids))
+    if body.only_missing:
+        query = query.where(
+            (Transaction.narration_clean.is_(None))
+            | (Transaction.payment_mode.is_(None))
+            | (Transaction.counterparty.is_(None))
+            | (Transaction.confidence.is_(None))
+        )
+
+    result = await db.execute(query.order_by(Transaction.row_number).limit(body.limit))
+    transactions = result.scalars().all()
+    enrichments = await enrich_transactions_with_tracking(db, list(transactions), statement_id)
+    by_id = {item.transaction_id: item for item in enrichments}
+
+    for transaction in transactions:
+        enrichment = by_id.get(transaction.id)
+        if enrichment:
+            apply_enrichment(transaction, enrichment)
+
+    await db.commit()
+    usage = await summarize_usage(db, statement_id)
+
+    return {
+        "success": True,
+        "data": {
+            "statement_id": statement_id,
+            "updated": len(enrichments),
+            "usage": serialize_usage(usage),
+            "items": [serialize_enrichment(item) for item in enrichments],
+        },
+    }
+
+
+@router.get("/{statement_id}/llm-usage", response_model=dict)
+async def get_statement_llm_usage(
+    statement_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return LLM cache/cost totals for a statement."""
+    stmt = await db.get(Statement, statement_id)
+    if not stmt:
+        raise HTTPException(status_code=404, detail="Statement not found")
+
+    return {
+        "success": True,
+        "data": {
+            "statement_id": statement_id,
+            "usage": serialize_usage(await summarize_usage(db, statement_id)),
+        },
     }
 
 
@@ -392,8 +522,17 @@ async def bulk_update_transactions(
             continue
         
         # Apply updates
-        for field, value in item.model_dump(exclude_unset=True, exclude={"id"}).items():
+        updates = item.model_dump(exclude_unset=True, exclude={"id"})
+        for field, value in updates.items():
             setattr(tx, field, value)
+
+        if updates.get("confirmed_ledger"):
+            await remember_ledger_mapping(
+                db=db,
+                transaction=tx,
+                ledger_name=updates["confirmed_ledger"],
+                client_id=stmt.client_id,
+            )
         
         updated += 1
     
@@ -455,4 +594,5 @@ async def get_statement_file(
     return FileResponse(
         path=file_path,
         filename=stmt.metadata_.get("original_filename", "statement"),
+        media_type="application/pdf" if stmt.file_type == "pdf" else None,
     )

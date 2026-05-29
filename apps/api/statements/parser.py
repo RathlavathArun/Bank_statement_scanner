@@ -44,6 +44,10 @@ class ParsedStatement:
     metadata: dict[str, Any]
 
 
+class PDFReadError(StatementParserError):
+    """Raised when the uploaded PDF cannot be opened as a PDF at all."""
+
+
 GENERIC_ALIASES = {
     "date": ("date", "txn date", "transaction date", "transaction dt"),
     "value_date": ("value date", "value dt", "val date"),
@@ -53,6 +57,13 @@ GENERIC_ALIASES = {
     "credit": ("credit", "deposit", "deposit amt", "deposit amount"),
     "balance": ("balance", "closing balance"),
 }
+
+TEXT_TRANSACTION_RE = re.compile(
+    r"(?P<date>\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b|\b\d{4}-\d{1,2}-\d{1,2}\b)"
+    r"\s+(?P<body>.+?)\s+"
+    r"(?P<amount>-?\(?\d[\d,]*(?:\.\d{1,2})?\)?)"
+    r"(?:\s+(?P<balance>-?\(?\d[\d,]*(?:\.\d{1,2})?\)?))?$"
+)
 
 
 def parse_statement(file_path: Path, bank_code: str | None = None) -> ParsedStatement:
@@ -102,12 +113,84 @@ def parse_pdf(file_path: Path, template: dict[str, Any]) -> ParsedStatement:
         ) from exc
 
     rows: list[list[str]] = []
-    with pdfplumber.open(str(file_path)) as pdf:
-        for page in pdf.pages:
-            for table in page.extract_tables() or []:
-                rows.extend([[cell or "" for cell in row] for row in table])
+    text_pages: list[str] = []
+    try:
+        with pdfplumber.open(str(file_path)) as pdf:
+            for page in pdf.pages:
+                text_pages.append(page.extract_text() or "")
+                for table in page.extract_tables() or []:
+                    rows.extend([[cell or "" for cell in row] for row in table])
+    except Exception as exc:
+        raise PDFReadError(
+            "Could not read this PDF. Please upload a valid PDF bank statement."
+        ) from exc
 
-    return parse_rows(rows, template, source="pdf")
+    if rows:
+        try:
+            return parse_rows(rows, template, source="pdf")
+        except StatementParserError:
+            pass
+
+    text = "\n".join(text_pages)
+    if not text.strip():
+        raise StatementParserError(
+            "No extractable text found in this PDF. OCR support is planned; upload CSV for scanned/image-only statements."
+        )
+
+    text_transactions = parse_text_transactions(text, template)
+    if text_transactions:
+        return ParsedStatement(
+            transactions=text_transactions,
+            metadata={
+                "parser": "pdf_text",
+                "template_bank": template.get("bank_code"),
+                "row_count": len(text_transactions),
+            },
+        )
+
+    raise StatementParserError(
+        "PDF uploaded successfully, but no transaction rows matched the current bank template."
+    )
+
+
+def parse_text_transactions(text: str, template: dict[str, Any]) -> list[ParsedTransaction]:
+    date_formats = get_date_formats(template)
+    transactions: list[ParsedTransaction] = []
+    for line in text.splitlines():
+        cleaned = re.sub(r"\s+", " ", line).strip()
+        match = TEXT_TRANSACTION_RE.search(cleaned)
+        if not match:
+            continue
+
+        txn_date = parse_date(match.group("date"), date_formats)
+        if not txn_date:
+            continue
+
+        body = match.group("body").strip()
+        amount = parse_amount(match.group("amount"))
+        balance = parse_amount(match.group("balance") or "")
+        if amount is None:
+            continue
+
+        is_credit = bool(re.search(r"\b(cr|credit|received|deposit|refund|salary)\b", body, re.I))
+        is_debit = bool(re.search(r"\b(dr|debit|paid|payment|withdrawal|purchase|to)\b", body, re.I))
+        credit = amount if is_credit and not is_debit else None
+        debit = amount if credit is None else None
+
+        transactions.append(
+            ParsedTransaction(
+                row_number=len(transactions) + 1,
+                txn_date=txn_date,
+                value_date=None,
+                narration=body,
+                reference_no=None,
+                debit=debit,
+                credit=credit,
+                balance=balance,
+            )
+        )
+
+    return transactions
 
 
 def parse_rows(rows: list[list[str]], template: dict[str, Any], source: str) -> ParsedStatement:

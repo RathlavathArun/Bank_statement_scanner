@@ -6,7 +6,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = "/api";
 
 type DashboardUser = {
   full_name?: string | null;
@@ -19,15 +19,19 @@ type StatementSummary = {
   id: string;
   filename: string;
   bank: string;
+  file_type?: string;
   status: string;
+  error?: string | null;
 };
 
 type StatementListApiItem = {
   id: string;
   filename?: string;
+  file_type?: string;
   bank_code?: string | null;
   bank_id?: string | null;
   status: string;
+  error_message?: string | null;
 };
 
 type ExtractedTransaction = {
@@ -52,6 +56,21 @@ type UploadControlsProps = {
   handleUpload: () => Promise<void>;
   error: string | null;
 };
+
+async function readApiResponse(res: Response) {
+  const text = await res.text();
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(
+      res.ok
+        ? "Server returned an invalid response."
+        : `API request failed (${res.status}): ${text.slice(0, 160)}`
+    );
+  }
+}
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -120,7 +139,9 @@ export default function DashboardPage() {
                 id: stmt.id,
                 filename: stmt.filename || "Unknown",
                 bank: stmt.bank_code || stmt.bank_id || "Unknown",
+                file_type: stmt.file_type,
                 status: stmt.status,
+                error: stmt.error_message,
               }))
             );
           }
@@ -198,15 +219,20 @@ export default function DashboardPage() {
       setStatus("uploading");
       setProgress(30);
 
+      const token = localStorage.getItem("access_token") || localStorage.getItem("token");
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+
       const res = await fetch(`${API}/v1/statements/upload`, {
         method: "POST",
+        headers,
         body: formData,
       });
 
-      const data = await res.json();
+      const data = await readApiResponse(res);
 
       if (!res.ok || !data.success) {
-        throw new Error(data.message || "Upload failed");
+        throw new Error(data.detail || data.error || data.message || "Upload failed");
       }
 
       setProgress(100);
@@ -218,19 +244,23 @@ export default function DashboardPage() {
           id: data.data.id,
           filename: data.data.filename,
           bank: data.data.bank || bank || "Unknown",
+          file_type: data.data.file_type,
           status: data.data.status,
+          error: data.data.error,
         },
         ...prev,
       ]);
 
       setFile(null);
+      if (data.data.error) {
+        setError(data.data.error);
+      }
       if (data.data.status === "READY_FOR_REVIEW") {
         fetchResult(data.data.id);
       }
     } catch (err) {
-      console.error(err);
       setStatus("failed");
-      setError("Upload failed. Please try again.");
+      setError(err instanceof Error ? err.message : "Upload failed. Please try again.");
     }
   };
 
@@ -398,9 +428,16 @@ export default function DashboardPage() {
                     className="grid grid-cols-4 text-sm py-3 border-b last:border-b-0 text-slate-700 dark:text-slate-300 items-center"
                   >
                     <span className="truncate pr-4">{stmt.filename}</span>
-                    <span>{stmt.bank}</span>
+                    <span className="flex items-center gap-2">
+                      {stmt.bank}
+                      {stmt.file_type && (
+                        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs uppercase text-slate-500 dark:bg-slate-800 dark:text-slate-300">
+                          {stmt.file_type}
+                        </span>
+                      )}
+                    </span>
                     <span data-testid={`status-chip-${stmt.id}`}>{stmt.status}</span>
-                    {stmt.status === "READY_FOR_REVIEW" ? (
+                    {stmt.status === "READY_FOR_REVIEW" || stmt.file_type?.toLowerCase() === "pdf" ? (
                       <Link
                         href={`/dashboard/review/${stmt.id}`}
                         data-testid={`review-button-${stmt.id}`}
@@ -503,7 +540,7 @@ function UploadControls({
       )}
 
       <div className="flex justify-center gap-2">
-        {["HDFC", "ICICI", "SBI"].map((b) => (
+        {["HDFC", "ICICI", "SBI", "AXIS", "KOTAK"].map((b) => (
           <button
             key={b}
             onClick={() => setBank(b)}

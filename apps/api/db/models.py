@@ -203,3 +203,36 @@ class AuditLog(Base):
 
     # Relationships
     user = relationship("User")
+
+
+class LLMCache(Base):
+    __tablename__ = "llm_cache"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    content_hash = Column(String(64), unique=True, nullable=False, index=True)
+    provider = Column(String(50), nullable=False)
+    model = Column(String(100), nullable=False)
+    response_json = Column(JSON, nullable=False)
+    prompt_tokens = Column(Integer, nullable=False, default=0)
+    completion_tokens = Column(Integer, nullable=False, default=0)
+    cost_usd = Column(Numeric(10, 6), nullable=False, default=0)
+    hit_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_used_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class LLMUsage(Base):
+    __tablename__ = "llm_usage"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    statement_id = Column(String(36), ForeignKey("statements.id", ondelete="CASCADE"), nullable=True, index=True)
+    transaction_id = Column(String(36), ForeignKey("transactions.id", ondelete="SET NULL"), nullable=True)
+    provider = Column(String(50), nullable=False)
+    model = Column(String(100), nullable=False)
+    operation = Column(String(100), nullable=False)
+    cache_status = Column(String(20), nullable=False)  # HIT | MISS | FALLBACK
+    content_hash = Column(String(64), nullable=True, index=True)
+    prompt_tokens = Column(Integer, nullable=False, default=0)
+    completion_tokens = Column(Integer, nullable=False, default=0)
+    cost_usd = Column(Numeric(10, 6), nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)

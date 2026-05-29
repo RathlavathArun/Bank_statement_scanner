@@ -2,6 +2,7 @@
 Application configuration — reads from environment variables / .env file.
 """
 from pydantic_settings import BaseSettings
+from pydantic import field_validator
 from typing import List
 import os
 
@@ -12,6 +13,19 @@ class Settings(BaseSettings):
 
     # ─── Redis ───────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379/0"
+
+    # Vector memory / Qdrant
+    QDRANT_ENABLED: bool = False
+    QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_COLLECTION: str = "ledger_mappings"
+    QDRANT_VECTOR_SIZE: int = 64
+
+    # Claude / Anthropic narration enrichment
+    ANTHROPIC_API_KEY: str | None = None
+    ANTHROPIC_MODEL: str = "claude-3-5-haiku-latest"
+    LLM_BATCH_SIZE: int = 20
+    ANTHROPIC_INPUT_USD_PER_1M: float = 0.80
+    ANTHROPIC_OUTPUT_USD_PER_1M: float = 4.00
 
     # ─── S3 / MinIO ─────────────────────────────
     S3_ENDPOINT: str = "http://localhost:9000"
@@ -30,6 +44,13 @@ class Settings(BaseSettings):
     API_PORT: int = 8000
     DEBUG: bool = True
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001"
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def parse_debug(cls, value):
+        if isinstance(value, str) and value.lower() in {"release", "prod", "production"}:
+            return False
+        return value
 
     @property
     def cors_origins_list(self) -> List[str]:

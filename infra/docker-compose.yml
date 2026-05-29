@@ -36,6 +36,17 @@ services:
       timeout: 3s
       retries: 5
 
+  # Qdrant vector store for ledger mapping memory
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: bse_qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
   # ─── MinIO (S3-compatible storage) ────────────────────────
   minio:
     image: minio/minio:latest
@@ -83,5 +94,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  qdrant_data:
   minio_data:
   grafana_data:

@@ -1,0 +1,35 @@
+bank_id: sbi
+display_name: "State Bank of India"
+bank_code: SBI
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "State Bank of India"
+    - "SBI"
+    - "Account Statement"
+  regex:
+    - "IFSC\\s*:?\\s*SBIN0[0-9]{6}"
+
+extraction:
+  headers:
+    - "Txn Date"
+    - "Value Date"
+    - "Description"
+    - "Ref No./Cheque No."
+    - "Debit"
+    - "Credit"
+    - "Balance"
+
+  columns:
+    date: 0
+    value_date: 1
+    narration: 2
+    reference: 3
+    debit: 4
+    credit: 5
+    balance: 6
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

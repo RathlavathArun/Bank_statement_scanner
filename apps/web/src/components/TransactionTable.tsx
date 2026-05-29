@@ -33,6 +33,7 @@ interface TransactionTableProps {
   pageSize: number;
   onPageChange: (p: number) => void;
   onPageSizeChange: (size: number) => void;
+  onBulkUpdate?: (txIds: string[], changes: Partial<Transaction>) => void;
 }
 
 type FilterType = "ALL" | "DEBIT" | "CREDIT";
@@ -56,6 +57,7 @@ export function TransactionTable({
   pageSize,
   onPageChange,
   onPageSizeChange,
+  onBulkUpdate,
 }: TransactionTableProps) {
   void statementId;
   const [editingCell, setEditingCell] = useState<string | null>(null);
@@ -66,6 +68,8 @@ export function TransactionTable({
   const [dateTo, setDateTo] = useState("");
   const [sortBy, setSortBy] = useState<"date" | "narration">("date");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [rowSelection, setRowSelection] = useState({});
+  const [bulkLedger, setBulkLedger] = useState("");
 
   const filtered = useMemo(() => {
     let result = [...transactions];
@@ -124,6 +128,25 @@ export function TransactionTable({
 
   const columns = useMemo(
     () => [
+      columnHelper.display({
+        id: "select",
+        header: ({ table }) => (
+          <input
+            type="checkbox"
+            checked={table.getIsAllPageRowsSelected()}
+            onChange={table.getToggleAllPageRowsSelectedHandler()}
+            className="rounded"
+          />
+        ),
+        cell: ({ row }) => (
+          <input
+            type="checkbox"
+            checked={row.getIsSelected()}
+            onChange={row.getToggleSelectedHandler()}
+            className="rounded"
+          />
+        ),
+      }),
       columnHelper.accessor("txn_date", {
         header: () => (
           <button
@@ -222,11 +245,20 @@ export function TransactionTable({
       }),
       columnHelper.accessor("confidence", {
         header: () => <span className="block text-center">Conf.</span>,
-        cell: (info) => (
-          <span className="block text-center text-xs text-gray-400">
-            {info.getValue() ? `${Math.round(Number(info.getValue()) * 100)}%` : "-"}
-          </span>
-        ),
+        cell: (info) => {
+          const val = Number(info.getValue() || 0);
+          if (!val) return <span className="block text-center text-xs text-gray-400">-</span>;
+          
+          let badgeClass = "bg-red-500/20 text-red-400 border-red-500/30";
+          if (val >= 0.8) badgeClass = "bg-green-500/20 text-green-400 border-green-500/30";
+          else if (val >= 0.5) badgeClass = "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
+          
+          return (
+            <span className={`inline-block text-center text-xs px-2 py-0.5 rounded border ${badgeClass}`}>
+              {Math.round(val * 100)}%
+            </span>
+          );
+        },
       }),
       columnHelper.accessor("is_ignored", {
         header: () => <span className="block text-center">✓</span>,
@@ -248,6 +280,10 @@ export function TransactionTable({
   const table = useReactTable({
     data: filtered,
     columns,
+    state: { rowSelection },
+    enableRowSelection: true,
+    onRowSelectionChange: setRowSelection,
+    getRowId: (row) => row.id,
     getCoreRowModel: getCoreRowModel(),
   });
 
@@ -310,6 +346,33 @@ export function TransactionTable({
         </div>
       </div>
 
+      {Object.keys(rowSelection).length > 0 && onBulkUpdate && (
+        <div className="flex items-center gap-3 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
+          <span className="text-sm font-medium text-blue-200">
+            {Object.keys(rowSelection).length} selected
+          </span>
+          <input
+            type="text"
+            placeholder="New Ledger Name"
+            value={bulkLedger}
+            onChange={(e) => setBulkLedger(e.target.value)}
+            className="rounded border border-white/20 bg-white/10 px-2 py-1 text-sm text-white focus:outline-none"
+          />
+          <button
+            onClick={() => {
+              const selectedIds = Object.keys(rowSelection);
+              onBulkUpdate(selectedIds, { confirmed_ledger: bulkLedger });
+              setRowSelection({});
+              setBulkLedger("");
+            }}
+            disabled={!bulkLedger}
+            className="rounded bg-blue-600 px-3 py-1 text-sm text-white disabled:opacity-50"
+          >
+            Apply to All
+          </button>
+        </div>
+      )}
+
       <div className="overflow-x-auto rounded-lg border border-white/10">
         <table className="w-full text-sm">
           <thead>
@@ -335,11 +398,14 @@ export function TransactionTable({
             ) : (
               table.getRowModel().rows.map((row) => {
                 const tx = row.original;
+                const conf = Number(tx.confidence || 1);
                 const rowClass = !tx.confirmed_ledger
                   ? "bg-red-500/5"
-                  : Number(tx.confidence || 1) < 0.5
-                    ? "bg-yellow-500/5"
-                    : "";
+                  : conf < 0.5
+                    ? "bg-red-500/10"
+                    : conf < 0.8
+                      ? "bg-yellow-500/10"
+                      : "";
 
                 return (
                   <tr

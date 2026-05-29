@@ -8,12 +8,14 @@ import { PDFViewer } from "@/components/PDFViewer";
 import { TransactionTable } from "@/components/TransactionTable";
 import { useUndoRedo } from "@/components/useUndoRedo";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = "/api";
 
 type StatementMeta = {
   id: string;
   filename: string;
   bank: string;
+  file_type?: string;
+  error?: string | null;
   status: string;
 };
 
@@ -44,6 +46,8 @@ type StatusPayload = {
   bank?: string;
   bank_code?: string;
   bank_id?: string;
+  file_type?: string;
+  error?: string | null;
   status: string;
 };
 
@@ -119,6 +123,8 @@ export default function ReviewPage() {
       id: data.id,
       filename: data.filename ?? "statement",
       bank: data.bank ?? data.bank_code ?? data.bank_id ?? "Unknown",
+      file_type: data.file_type,
+      error: data.error,
       status: data.status,
     });
   }, [statementId]);
@@ -203,6 +209,25 @@ export default function ReviewPage() {
     }
   };
 
+  const bulkUpdateTransactions = async (txIds: string[], changes: Partial<Transaction>) => {
+    const before = transactions;
+    const next = before.map((tx) => (txIds.includes(tx.id) ? { ...tx, ...changes } : tx));
+    setTransactions(next);
+
+    try {
+      const res = await fetch(`${API}/v1/statements/${statementId}/transactions/bulk-update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ ids: txIds, updates: changes }),
+      });
+      if (!res.ok) throw new Error("Bulk save failed");
+      addToast("success", `Updated ${txIds.length} transactions`);
+    } catch (error) {
+      resetTransactions(before);
+      addToast("error", error instanceof Error ? error.message : "Bulk save failed");
+    }
+  };
+
   const markReviewed = async () => {
     try {
       const res = await fetch(`${API}/v1/statements/${statementId}/status`, {
@@ -217,6 +242,28 @@ export default function ReviewPage() {
       addToast("error", error instanceof Error ? error.message : "Could not mark reviewed");
     }
   };
+
+  const isPdf = statement?.file_type?.toLowerCase() === "pdf";
+  const filePreview = isPdf ? (
+    <PDFViewer fileUrl={fileUrl} />
+  ) : (
+    <div
+      data-testid="file-preview-fallback"
+      className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-lg border border-white/10 bg-black/30 p-6 text-center text-white backdrop-blur-xl"
+    >
+      <p className="text-lg font-semibold">PDF preview is available for PDF files</p>
+      <p className="mt-2 max-w-md text-sm text-slate-300">
+        This statement is a {statement?.file_type?.toUpperCase() || "non-PDF"} file. Review extracted transactions on the right or download the original file.
+      </p>
+      <a
+        className="mt-5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+        href={fileUrl}
+        download
+      >
+        Download original
+      </a>
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
@@ -270,6 +317,11 @@ export default function ReviewPage() {
       </header>
 
       <main className="h-[calc(100vh-65px)]">
+        {statement?.error && (
+          <div className="border-b border-yellow-500/20 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-100">
+            {statement.error}
+          </div>
+        )}
         <div className="grid grid-cols-2 border-b border-white/10 sm:hidden">
           <button
             className={`py-3 text-sm ${activeTab === "transactions" ? "bg-white/10" : ""}`}
@@ -287,7 +339,7 @@ export default function ReviewPage() {
 
         <div className="hidden h-full grid-cols-[40%_60%] sm:grid">
           <section className="h-full overflow-hidden border-r border-white/10 p-4">
-            <PDFViewer fileUrl={fileUrl} />
+            {filePreview}
           </section>
           <section className="h-full overflow-auto p-4">
             <TransactionTable
@@ -303,13 +355,14 @@ export default function ReviewPage() {
                 setPageSize(size);
                 setPage(1);
               }}
+              onBulkUpdate={bulkUpdateTransactions}
             />
           </section>
         </div>
 
         <div className="h-full p-4 sm:hidden">
           {activeTab === "pdf" ? (
-            <PDFViewer fileUrl={fileUrl} />
+            filePreview
           ) : (
             <TransactionTable
               statementId={statementId}
@@ -324,6 +377,7 @@ export default function ReviewPage() {
                 setPageSize(size);
                 setPage(1);
               }}
+              onBulkUpdate={bulkUpdateTransactions}
             />
           )}
         </div>
