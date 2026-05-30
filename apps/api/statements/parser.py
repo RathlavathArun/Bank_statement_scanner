@@ -48,11 +48,15 @@ class PDFReadError(StatementParserError):
     """Raised when the uploaded PDF cannot be opened as a PDF at all."""
 
 
+class PasswordProtectedError(StatementParserError):
+    """Raised when the PDF is password-protected and no/wrong password was supplied."""
+
+
 GENERIC_ALIASES = {
     "date": ("date", "txn date", "transaction date", "transaction dt"),
     "value_date": ("value date", "value dt", "val date"),
-    "narration": ("narration", "description", "transaction remarks", "remarks"),
-    "reference": ("ref", "reference", "reference no", "chq ref no", "cheque number"),
+    "narration": ("narration", "description", "transaction remarks", "remarks", "particulars"),
+    "reference": ("ref", "reference", "reference no", "chq ref no", "cheque number", "chq num", "chq no"),
     "debit": ("debit", "withdrawal", "withdrawal amt", "withdrawal amount"),
     "credit": ("credit", "deposit", "deposit amt", "deposit amount"),
     "balance": ("balance", "closing balance"),
@@ -66,7 +70,7 @@ TEXT_TRANSACTION_RE = re.compile(
 )
 
 
-def parse_statement(file_path: Path, bank_code: str | None = None) -> ParsedStatement:
+def parse_statement(file_path: Path, bank_code: str | None = None, password: str | None = None) -> ParsedStatement:
     suffix = file_path.suffix.lower()
     template = load_bank_template(bank_code)
 
@@ -74,7 +78,7 @@ def parse_statement(file_path: Path, bank_code: str | None = None) -> ParsedStat
         return parse_rows(read_csv_rows(file_path), template, source="csv")
 
     if suffix == ".pdf":
-        return parse_pdf(file_path, template)
+        return parse_pdf(file_path, template, password=password)
 
     raise StatementParserError(
         f"Unsupported statement format '{suffix or 'unknown'}'. Upload a CSV or text-based PDF."
@@ -104,7 +108,7 @@ def read_csv_rows(file_path: Path) -> list[list[str]]:
         return [list(row) for row in csv.reader(csv_file, dialect)]
 
 
-def parse_pdf(file_path: Path, template: dict[str, Any]) -> ParsedStatement:
+def parse_pdf(file_path: Path, template: dict[str, Any], password: str | None = None) -> ParsedStatement:
     try:
         import pdfplumber
     except ImportError as exc:
@@ -112,14 +116,24 @@ def parse_pdf(file_path: Path, template: dict[str, Any]) -> ParsedStatement:
             "PDF parsing requires pdfplumber. Install API requirements and retry."
         ) from exc
 
+    from pdfminer.pdfdocument import PDFPasswordIncorrect
+
     rows: list[list[str]] = []
     text_pages: list[str] = []
     try:
-        with pdfplumber.open(str(file_path)) as pdf:
+        with pdfplumber.open(str(file_path), password=password) as pdf:
             for page in pdf.pages:
                 text_pages.append(page.extract_text() or "")
                 for table in page.extract_tables() or []:
                     rows.extend([[cell or "" for cell in row] for row in table])
+    except PDFPasswordIncorrect:
+        if password:
+            raise PasswordProtectedError(
+                "Incorrect password. Please provide the correct PDF password."
+            )
+        raise PasswordProtectedError(
+            "This PDF is password-protected. Please re-upload with the document password."
+        )
     except Exception as exc:
         raise PDFReadError(
             "Could not read this PDF. Please upload a valid PDF bank statement."

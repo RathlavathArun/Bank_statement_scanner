@@ -55,6 +55,9 @@ type UploadControlsProps = {
   setProgress: Dispatch<SetStateAction<number>>;
   handleUpload: () => Promise<void>;
   error: string | null;
+  passwordNeeded: boolean;
+  password: string;
+  setPassword: Dispatch<SetStateAction<string>>;
 };
 
 async function readApiResponse(res: Response) {
@@ -88,6 +91,8 @@ export default function DashboardPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [transactions, setTransactions] = useState<ExtractedTransaction[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [passwordNeeded, setPasswordNeeded] = useState(false);
 
   useEffect(() => {
     const token = localStorage.getItem("access_token") || localStorage.getItem("token");
@@ -215,6 +220,10 @@ export default function DashboardPage() {
       formData.append("bank", bank);
     }
 
+    if (password) {
+      formData.append("password", password);
+    }
+
     try {
       setStatus("uploading");
       setProgress(30);
@@ -232,12 +241,30 @@ export default function DashboardPage() {
       const data = await readApiResponse(res);
 
       if (!res.ok || !data.success) {
-        throw new Error(data.detail || data.error || data.message || "Upload failed");
+        const detail = data.detail;
+        if (
+          detail &&
+          typeof detail === "object" &&
+          (detail.error_code === "PASSWORD_REQUIRED" || detail.error_code === "INVALID_PASSWORD")
+        ) {
+          setPasswordNeeded(true);
+          setStatus("password_needed");
+          setProgress(0);
+          setError(detail.message || "This PDF is password-protected. Please enter the password.");
+          return;
+        }
+        const message =
+          typeof detail === "string"
+            ? detail
+            : detail?.message || data.error || data.message || "Upload failed";
+        throw new Error(message);
       }
 
       setProgress(100);
       setStatus(data.data.status);
       setUploadedStatementId(data.data.id);
+      setPasswordNeeded(false);
+      setPassword("");
 
       setStatements((prev) => [
         {
@@ -411,6 +438,9 @@ export default function DashboardPage() {
                   setProgress={setProgress}
                   handleUpload={handleUpload}
                   error={error}
+                  passwordNeeded={passwordNeeded}
+                  password={password}
+                  setPassword={setPassword}
                 />
               </div>
             ) : (
@@ -477,6 +507,9 @@ export default function DashboardPage() {
                     setProgress={setProgress}
                     handleUpload={handleUpload}
                     error={error}
+                    passwordNeeded={passwordNeeded}
+                    password={password}
+                    setPassword={setPassword}
                   />
                 </div>
               </div>
@@ -529,6 +562,9 @@ function UploadControls({
   setProgress,
   handleUpload,
   error,
+  passwordNeeded,
+  password,
+  setPassword,
 }: UploadControlsProps) {
   return (
     <div className="space-y-4">
@@ -567,6 +603,25 @@ function UploadControls({
         ))}
       </div>
 
+      {passwordNeeded && (
+        <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-950/30 dark:border-amber-800">
+          <svg className="w-5 h-5 text-amber-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+          </svg>
+          <input
+            type="password"
+            placeholder="Enter PDF password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && file) handleUpload(); }}
+            className="flex-1 px-3 py-1.5 rounded-md border border-amber-300 bg-white text-sm
+                       text-slate-800 placeholder:text-slate-400
+                       focus:outline-none focus:ring-2 focus:ring-amber-400
+                       dark:bg-slate-900 dark:border-amber-700 dark:text-slate-200"
+          />
+        </div>
+      )}
+
       {status !== "idle" && (
         <p className="text-sm text-slate-500">
           Status: {status} {progress > 0 && `(${progress}%)`}
@@ -578,10 +633,10 @@ function UploadControls({
       <Button
         variant="outline"
         className="glass-input"
-        disabled={!file}
+        disabled={!file || (passwordNeeded && !password)}
         onClick={handleUpload}
       >
-        Upload Statement
+        {passwordNeeded ? "Unlock & Upload" : "Upload Statement"}
       </Button>
     </div>
   );

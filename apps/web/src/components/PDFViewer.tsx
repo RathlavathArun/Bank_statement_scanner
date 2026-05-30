@@ -1,6 +1,6 @@
 "use client";
 
-import { ComponentType, ReactNode, useEffect, useState } from "react";
+import { ComponentType, ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 
@@ -15,6 +15,7 @@ type DocumentProps = {
   onLoadError?: () => void;
   onSourceError?: () => void;
   onLoadSuccess: (meta: { numPages: number }) => void;
+  onPassword?: (callback: (password: string) => void, reason: number) => void;
   children: ReactNode;
 };
 
@@ -43,6 +44,13 @@ export function PDFViewer({ fileUrl }: PDFViewerProps) {
   const [zoom, setZoom] = useState(1);
   const [viewerError, setViewerError] = useState(false);
 
+  // Password-prompt state
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [pdfPassword, setPdfPassword] = useState("");
+  const [passwordError, setPasswordError] = useState(false);
+  const passwordCallbackRef = useRef<((password: string) => void) | null>(null);
+  const passwordInputRef = useRef<HTMLInputElement | null>(null);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -67,6 +75,37 @@ export function PDFViewer({ fileUrl }: PDFViewerProps) {
       cancelled = true;
     };
   }, []);
+
+  // Auto-focus the password input when modal opens
+  useEffect(() => {
+    if (showPasswordModal) {
+      setTimeout(() => passwordInputRef.current?.focus(), 50);
+    }
+  }, [showPasswordModal]);
+
+  const handlePassword = useCallback(
+    (callback: (password: string) => void, reason: number) => {
+      // reason 1 = need password, reason 2 = incorrect password
+      passwordCallbackRef.current = callback;
+      setPasswordError(reason === 2);
+      setPdfPassword("");
+      setShowPasswordModal(true);
+    },
+    []
+  );
+
+  const submitPassword = () => {
+    if (passwordCallbackRef.current && pdfPassword) {
+      passwordCallbackRef.current(pdfPassword);
+      setShowPasswordModal(false);
+    }
+  };
+
+  const cancelPassword = () => {
+    setShowPasswordModal(false);
+    passwordCallbackRef.current = null;
+    setViewerError(true);
+  };
 
   const loading = (
     <div className="space-y-2 p-4">
@@ -140,6 +179,7 @@ export function PDFViewer({ fileUrl }: PDFViewerProps) {
             error={fallback}
             onLoadError={() => setViewerError(true)}
             onSourceError={() => setViewerError(true)}
+            onPassword={handlePassword}
             onLoadSuccess={({ numPages: loadedPages }) => {
               setNumPages(loadedPages);
               setCurrentPage(1);
@@ -156,6 +196,61 @@ export function PDFViewer({ fileUrl }: PDFViewerProps) {
           </Document>
         )}
       </div>
+
+      {/* Password modal overlay */}
+      {showPasswordModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-xl border border-white/10 bg-slate-900 p-6 shadow-2xl">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-500/20">
+                <svg className="h-5 w-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-white">
+                  {passwordError ? "Incorrect password" : "Password required"}
+                </h3>
+                <p className="text-xs text-slate-400">
+                  {passwordError
+                    ? "The password you entered is incorrect. Please try again."
+                    : "This PDF is password-protected. Enter the password to view it."}
+                </p>
+              </div>
+            </div>
+
+            <input
+              ref={passwordInputRef}
+              type="password"
+              placeholder="Enter PDF password"
+              value={pdfPassword}
+              onChange={(e) => setPdfPassword(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") submitPassword(); }}
+              className="mb-4 w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white
+                         placeholder:text-slate-500 focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
+            />
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={cancelPassword}
+                className="rounded-lg px-4 py-1.5 text-sm text-slate-400 transition hover:bg-white/5 hover:text-white"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitPassword}
+                disabled={!pdfPassword}
+                className="rounded-lg bg-amber-600 px-4 py-1.5 text-sm font-medium text-white transition
+                           hover:bg-amber-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Unlock
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

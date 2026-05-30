@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
 from db.models import Client, Firm, LLMCache, Statement, Transaction
-from statements.parser import PDFReadError, StatementParserError, parse_statement
+from statements.parser import PDFReadError, PasswordProtectedError, StatementParserError, parse_statement
 from statements.ledger_memory import (
     remember_ledger_mapping,
     serialize_suggestion,
@@ -132,6 +132,7 @@ async def upload_statement(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     bank: str | None = Form(default=None),
+    password: str | None = Form(default=None),
     db: AsyncSession = Depends(get_db),
 ):
     original_filename = file.filename or "statement"
@@ -158,7 +159,20 @@ async def upload_statement(
     statement.status = "PARSING"
     enrich_tx_ids: list[str] = []
     try:
-        parsed = parse_statement(file_path, bank)
+        parsed = parse_statement(file_path, bank, password=password)
+    except PasswordProtectedError as exc:
+        statement.status = "FAILED"
+        statement.error_message = str(exc)
+        await db.flush()
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error_code": "PASSWORD_REQUIRED" if not password else "INVALID_PASSWORD",
+                "message": str(exc),
+                "statement_id": statement.id,
+            },
+        )
     except PDFReadError as exc:
         statement.status = "FAILED"
         statement.error_message = str(exc)
