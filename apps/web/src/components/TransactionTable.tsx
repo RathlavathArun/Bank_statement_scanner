@@ -21,6 +21,8 @@ interface Transaction {
   suggested_ledger?: string;
   confirmed_ledger?: string;
   confidence?: number | string | null;
+  ocr_confidence?: number | string | null;
+  page_number?: number | null;
   is_ignored?: boolean;
 }
 
@@ -322,6 +324,38 @@ export function TransactionTable({
           );
         },
       }),
+      columnHelper.accessor("ocr_confidence", {
+        header: () => <span className="block text-center">OCR</span>,
+        cell: (info) => {
+          const val = Number(info.getValue() || 0);
+          if (!val) return <span className="block text-center text-xs text-gray-500">—</span>;
+
+          let badgeClass = "bg-red-500/20 text-red-300 border-red-500/30";
+          let icon = "⚠️";
+          let label = "Low";
+          if (val >= 0.85) {
+            badgeClass = "bg-emerald-500/20 text-emerald-300 border-emerald-500/30";
+            icon = "✓";
+            label = "High";
+          } else if (val >= 0.7) {
+            badgeClass = "bg-amber-500/20 text-amber-300 border-amber-500/30";
+            icon = "~";
+            label = "Med";
+          }
+
+          const tx = info.row.original;
+
+          return (
+            <span
+              className={`inline-flex items-center gap-1 text-center text-xs px-2 py-0.5 rounded border cursor-help ${badgeClass}`}
+              title={`OCR confidence: ${Math.round(val * 100)}%${tx.page_number ? ` (page ${tx.page_number})` : ""}\n${val < 0.7 ? "⚠ Red-flagged: manual review recommended" : val < 0.85 ? "⚡ Medium confidence: verify key fields" : "✓ High confidence"}`}
+            >
+              <span>{icon}</span>
+              <span>{Math.round(val * 100)}%</span>
+            </span>
+          );
+        },
+      }),
       columnHelper.accessor("is_ignored", {
         header: () => <span className="block text-center">✓</span>,
         cell: ({ row, getValue }) => (
@@ -461,19 +495,32 @@ export function TransactionTable({
               table.getRowModel().rows.map((row) => {
                 const tx = row.original;
                 const conf = Number(tx.confidence || 1);
-                const rowClass = !tx.confirmed_ledger
-                  ? "bg-red-500/5"
-                  : conf < 0.5
-                    ? "bg-red-500/10"
-                    : conf < 0.8
-                      ? "bg-yellow-500/10"
-                      : "";
+                const ocrConf = Number(tx.ocr_confidence || 0);
+
+                // Determine row class based on confidence and OCR confidence
+                let rowClass = "";
+                let borderLeft = "";
+
+                // OCR confidence takes priority for flagging
+                if (ocrConf > 0 && ocrConf < 0.7) {
+                  rowClass = "bg-red-500/10";
+                  borderLeft = "border-l-4 border-l-red-500";
+                } else if (ocrConf > 0 && ocrConf < 0.85) {
+                  rowClass = "bg-amber-500/5";
+                  borderLeft = "border-l-4 border-l-amber-500";
+                } else if (!tx.confirmed_ledger) {
+                  rowClass = "bg-red-500/5";
+                } else if (conf < 0.5) {
+                  rowClass = "bg-red-500/10";
+                } else if (conf < 0.8) {
+                  rowClass = "bg-yellow-500/10";
+                }
 
                 return (
                   <tr
                     key={row.id}
                     data-testid="transaction-row"
-                    className={`border-b border-white/10 transition-colors hover:bg-white/5 ${rowClass}`}
+                    className={`border-b border-white/10 transition-colors hover:bg-white/5 ${rowClass} ${borderLeft}`}
                   >
                     {row.getVisibleCells().map((cell) => (
                       <td key={cell.id} className="px-4 py-2">

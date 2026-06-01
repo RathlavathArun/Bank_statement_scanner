@@ -3,11 +3,13 @@ Statement parsing helpers for the upload API.
 
 The parser intentionally starts narrow: CSV files are parsed with the standard
 library, and PDFs use pdfplumber when that optional dependency is installed.
-Both paths share the bank template column mapping.
+Excel files (.xlsx/.xls) are handled via openpyxl and xlrd respectively.
+All tabular paths share the bank template column mapping.
 """
 from __future__ import annotations
 
 import csv
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -16,6 +18,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -36,6 +40,7 @@ class ParsedTransaction:
     debit: Decimal | None
     credit: Decimal | None
     balance: Decimal | None
+    ocr_confidence: float | None = None
 
 
 @dataclass(frozen=True)
@@ -80,8 +85,11 @@ def parse_statement(file_path: Path, bank_code: str | None = None, password: str
     if suffix == ".pdf":
         return parse_pdf(file_path, template, password=password)
 
+    if suffix in (".xlsx", ".xls"):
+        return parse_rows(parse_excel(file_path), template, source="excel")
+
     raise StatementParserError(
-        f"Unsupported statement format '{suffix or 'unknown'}'. Upload a CSV or text-based PDF."
+        f"Unsupported statement format '{suffix or 'unknown'}'. Upload a CSV, PDF, or Excel file."
     )
 
 
@@ -106,6 +114,62 @@ def read_csv_rows(file_path: Path) -> list[list[str]]:
         except csv.Error:
             dialect = csv.excel
         return [list(row) for row in csv.reader(csv_file, dialect)]
+
+
+def parse_excel(file_path: Path) -> list[list[str]]:
+    """Read an Excel workbook (.xlsx or legacy .xls) and return all rows as strings.
+
+    The function iterates through every sheet and appends all non-empty rows.
+    Header auto-detection is handled downstream by ``detect_columns()`` which
+    already scans the first 15 rows.
+    """
+    suffix = file_path.suffix.lower()
+
+    if suffix == ".xlsx":
+        try:
+            import openpyxl
+        except ImportError as exc:
+            raise StatementParserError(
+                "Excel (.xlsx) parsing requires openpyxl. Install API requirements and retry."
+            ) from exc
+
+        wb = openpyxl.load_workbook(str(file_path), read_only=True, data_only=True)
+        rows: list[list[str]] = []
+        try:
+            for ws in wb.worksheets:
+                for row in ws.iter_rows(values_only=True):
+                    str_row = [str(cell) if cell is not None else "" for cell in row]
+                    if any(cell.strip() for cell in str_row):
+                        rows.append(str_row)
+        finally:
+            wb.close()
+
+        if not rows:
+            raise StatementParserError("The uploaded Excel file contains no data rows.")
+        return rows
+
+    if suffix == ".xls":
+        try:
+            import xlrd
+        except ImportError as exc:
+            raise StatementParserError(
+                "Legacy Excel (.xls) parsing requires xlrd. Install API requirements and retry."
+            ) from exc
+
+        wb = xlrd.open_workbook(str(file_path))
+        rows = []
+        for sheet_idx in range(wb.nsheets):
+            ws = wb.sheet_by_index(sheet_idx)
+            for row_idx in range(ws.nrows):
+                str_row = [str(ws.cell_value(row_idx, col)) for col in range(ws.ncols)]
+                if any(cell.strip() for cell in str_row):
+                    rows.append(str_row)
+
+        if not rows:
+            raise StatementParserError("The uploaded Excel file contains no data rows.")
+        return rows
+
+    raise StatementParserError(f"Unsupported Excel format: {suffix}")
 
 
 def parse_pdf(file_path: Path, template: dict[str, Any], password: str | None = None) -> ParsedStatement:
@@ -147,9 +211,8 @@ def parse_pdf(file_path: Path, template: dict[str, Any], password: str | None = 
 
     text = "\n".join(text_pages)
     if not text.strip():
-        raise StatementParserError(
-            "No extractable text found in this PDF. OCR support is planned; upload CSV for scanned/image-only statements."
-        )
+        # ── OCR fallback for scanned / image-only PDFs ──────────
+        return _ocr_fallback(file_path, template)
 
     text_transactions = parse_text_transactions(text, template)
     if text_transactions:
@@ -162,8 +225,122 @@ def parse_pdf(file_path: Path, template: dict[str, Any], password: str | None = 
             },
         )
 
-    raise StatementParserError(
-        "PDF uploaded successfully, but no transaction rows matched the current bank template."
+    # Last resort – try OCR in case the text was just page headers / footers
+    try:
+        return _ocr_fallback(file_path, template)
+    except Exception:
+        raise StatementParserError(
+            "PDF uploaded successfully, but no transaction rows matched the current bank template."
+        )
+
+
+def _ocr_fallback(file_path: Path, template: dict[str, Any]) -> ParsedStatement:
+    """Run OCR on a scanned PDF and convert the result to a ``ParsedStatement``.
+
+    Steps:
+      1. Call ``process_scanned_pdf`` from the OCR worker module.
+      2. Convert ``OCRRow`` objects into plain ``list[list[str]]`` rows.
+      3. Try ``parse_rows()`` with template column detection.
+      4. If that fails, build ``ParsedTransaction`` objects directly from OCR cells,
+         preserving per-row confidence scores.
+    """
+    from statements.ocr_worker import process_scanned_pdf
+
+    try:
+        ocr_result = process_scanned_pdf(file_path)
+    except RuntimeError as exc:
+        raise StatementParserError(str(exc)) from exc
+
+    if not ocr_result.rows:
+        raise StatementParserError(
+            "OCR completed but found no text rows. The document may be blank or heavily degraded."
+        )
+
+    # Convert OCR rows to plain string rows for the normal pipeline
+    plain_rows: list[list[str]] = [[cell.text for cell in row.cells] for row in ocr_result.rows]
+    confidence_by_row: list[float] = [row.row_confidence for row in ocr_result.rows]
+    page_by_row: list[int] = [row.page_number for row in ocr_result.rows]
+
+    try:
+        parsed = parse_rows(plain_rows, template, source="ocr")
+    except StatementParserError:
+        # Build transactions directly from OCR output
+        date_formats = get_date_formats(template)
+        transactions: list[ParsedTransaction] = []
+        for idx, row in enumerate(ocr_result.rows):
+            cells = [cell.text for cell in row.cells]
+            if len(cells) < 2:
+                continue
+            txn_date = parse_date(cells[0], date_formats)
+            if not txn_date:
+                continue
+            narration = cells[1] if len(cells) > 1 else ""
+            debit = parse_amount(cells[2]) if len(cells) > 2 else None
+            credit = parse_amount(cells[3]) if len(cells) > 3 else None
+            balance = parse_amount(cells[4]) if len(cells) > 4 else None
+            transactions.append(
+                ParsedTransaction(
+                    row_number=len(transactions) + 1,
+                    txn_date=txn_date,
+                    value_date=None,
+                    narration=narration,
+                    reference_no=None,
+                    debit=debit,
+                    credit=credit,
+                    balance=balance,
+                    ocr_confidence=row.row_confidence,
+                )
+            )
+        if not transactions:
+            raise StatementParserError("OCR found text but no valid transaction rows could be extracted.")
+
+        return ParsedStatement(
+            transactions=transactions,
+            metadata={
+                "parser": "ocr",
+                "ocr_engine": ocr_result.engine_used,
+                "pages_processed": ocr_result.pages_processed,
+                "template_bank": template.get("bank_code"),
+                "row_count": len(transactions),
+            },
+        )
+
+    # Augment successfully-parsed transactions with OCR confidence data.
+    # ``parse_rows`` detected a header row; data rows follow it.  We match
+    # them back to OCR rows using the header offset detected by parse_rows.
+    augmented: list[ParsedTransaction] = []
+    header_offset = 0
+    try:
+        header_offset, _ = detect_columns(plain_rows, template)
+    except StatementParserError:
+        pass
+    data_start = header_offset + 1
+
+    for txn in parsed.transactions:
+        ocr_idx = data_start + txn.row_number - 1
+        ocr_conf = confidence_by_row[ocr_idx] if ocr_idx < len(confidence_by_row) else None
+        augmented.append(
+            ParsedTransaction(
+                row_number=txn.row_number,
+                txn_date=txn.txn_date,
+                value_date=txn.value_date,
+                narration=txn.narration,
+                reference_no=txn.reference_no,
+                debit=txn.debit,
+                credit=txn.credit,
+                balance=txn.balance,
+                ocr_confidence=ocr_conf,
+            )
+        )
+
+    return ParsedStatement(
+        transactions=augmented,
+        metadata={
+            **parsed.metadata,
+            "parser": "ocr",
+            "ocr_engine": ocr_result.engine_used,
+            "pages_processed": ocr_result.pages_processed,
+        },
     )
 
 

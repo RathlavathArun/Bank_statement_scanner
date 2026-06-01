@@ -91,3 +91,21 @@ async def notify_status_change(statement_id: str, new_status: str):
         "status": new_status,
         "statement_id": statement_id,
     })
+
+
+async def notify_ocr_progress(
+    statement_id: str,
+    page_current: int,
+    page_total: int,
+    engine: str,
+    confidence_so_far: float | None = None,
+):
+    """Broadcast OCR progress (page-by-page) to all watchers."""
+    await manager.broadcast(statement_id, {
+        "type": "ocr_progress",
+        "statement_id": statement_id,
+        "page_current": page_current,
+        "page_total": page_total,
+        "engine": engine,
+        "confidence_so_far": confidence_so_far,
+    })

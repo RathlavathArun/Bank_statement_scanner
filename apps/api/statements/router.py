@@ -157,6 +157,9 @@ async def upload_statement(
         shutil.copyfileobj(file.file, buffer)
 
     statement.status = "PARSING"
+    await db.flush()
+    await notify_status_change(statement.id, statement.status)
+
     enrich_tx_ids: list[str] = []
     try:
         parsed = parse_statement(file_path, bank, password=password)
@@ -188,13 +191,25 @@ async def upload_statement(
         }
         await db.flush()
     else:
+        is_ocr = parsed.metadata.get("parser") == "ocr"
+
+        # Notify watchers that OCR is in progress (the sync call already ran,
+        # but this keeps the status timeline accurate for the frontend).
+        if is_ocr:
+            statement.status = "OCR"
+            await db.flush()
+            await notify_status_change(statement.id, "OCR")
+
         statement.metadata_ = {
             **statement.metadata_,
             **parsed.metadata,
         }
         statement.status = "READY_FOR_REVIEW"
-        new_txns = [
-            Transaction(
+
+        # Build Transaction rows; include OCR-specific columns when available.
+        new_txns: list[Transaction] = []
+        for txn in parsed.transactions:
+            tx_kwargs: dict = dict(
                 statement_id=statement.id,
                 row_number=txn.row_number,
                 txn_date=txn.txn_date,
@@ -205,8 +220,10 @@ async def upload_statement(
                 credit=txn.credit,
                 balance=txn.balance,
             )
-            for txn in parsed.transactions
-        ]
+            if is_ocr and txn.ocr_confidence is not None:
+                tx_kwargs["ocr_confidence"] = txn.ocr_confidence
+            new_txns.append(Transaction(**tx_kwargs))
+
         db.add_all(new_txns)
         await db.flush()
         enrich_tx_ids = [tx.id for tx in new_txns]

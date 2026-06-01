@@ -117,7 +117,7 @@ def test_invalid_pdf_upload_is_saved_as_failed_statement():
 
 
 def test_readable_pdf_parse_warning_still_allows_review(monkeypatch):
-    def fake_parse_statement(file_path, bank):
+    def fake_parse_statement(file_path, bank, password=None):
         raise StatementParserError("PDF uploaded successfully, but no transaction rows matched the current bank template.")
 
     monkeypatch.setattr("statements.router.parse_statement", fake_parse_statement)

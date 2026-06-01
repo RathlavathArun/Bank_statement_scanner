@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { PDFViewer } from "@/components/PDFViewer";
 import { TransactionTable } from "@/components/TransactionTable";
+import { OcrStatusScreen } from "@/components/OcrStatusScreen";
 import { useUndoRedo } from "@/components/useUndoRedo";
 
 const API = "/api";
@@ -31,6 +32,8 @@ type Transaction = {
   confirmed_ledger?: string;
   suggested_ledger?: string;
   confidence?: number | string | null;
+  ocr_confidence?: number | string | null;
+  page_number?: number | null;
   is_ignored?: boolean;
 };
 
@@ -292,6 +295,18 @@ export default function ReviewPage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
+      {/* OCR in-progress overlay */}
+      {statement?.status === "OCR" && (
+        <OcrStatusScreen
+          statementId={statementId}
+          status={statement.status}
+          onComplete={async () => {
+            await loadStatement();
+            await loadTransactions();
+          }}
+        />
+      )}
+
       <div className="fixed right-4 top-20 z-50 space-y-2">
         {toasts.map((toast) => (
           <div
