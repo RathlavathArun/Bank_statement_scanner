@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft } from "lucide-react";
+import ExportModal, { type ExportJob } from "@/components/ExportModal";
 import { PDFViewer } from "@/components/PDFViewer";
 import { TransactionTable } from "@/components/TransactionTable";
 import { OcrStatusScreen } from "@/components/OcrStatusScreen";
@@ -103,6 +104,7 @@ export default function ReviewPage() {
     canRedo,
   } = useUndoRedo<Transaction[]>([]);
   const [enriching, setEnriching] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
 
   const addToast = useCallback((type: Toast["type"], message: string) => {
     const id = Date.now();
@@ -194,7 +196,8 @@ export default function ReviewPage() {
     return () => socket.close();
   }, [statementId]);
 
-  const isReadOnly = statement?.status === "REVIEWED";
+  const isReadOnly = statement?.status === "REVIEWED" || statement?.status === "EXPORTED";
+  const canExport = statement?.status === "READY_FOR_REVIEW" || statement?.status === "REVIEWED" || statement?.status === "EXPORTED";
 
   const updateTransaction = async (txId: string, changes: Partial<Transaction>) => {
     if (isReadOnly) { addToast("error", "Statement is reviewed and locked — no edits allowed."); return; }
@@ -269,6 +272,11 @@ export default function ReviewPage() {
     } catch (error) {
       addToast("error", error instanceof Error ? error.message : "Could not mark reviewed");
     }
+  };
+
+  const handleExportComplete = (job: ExportJob) => {
+    setStatement((current) => current ? { ...current, status: "EXPORTED" } : current);
+    addToast("success", job.idempotent ? "Export is ready" : "Statement exported");
   };
 
   const isPdf = statement?.file_type?.toLowerCase() === "pdf";
@@ -352,12 +360,16 @@ export default function ReviewPage() {
             </button>
             <button
               className="rounded-lg bg-purple-600 px-3 py-2 text-sm font-medium disabled:opacity-40"
-              disabled={statement?.status === "REVIEWED"}
+              disabled={statement?.status === "REVIEWED" || statement?.status === "EXPORTED"}
               onClick={markReviewed}
             >
               Mark Reviewed
             </button>
-            <button className="rounded-lg bg-white/10 px-3 py-2 text-sm opacity-40" disabled title="Coming in Phase 5">
+            <button
+              className="rounded-lg bg-cyan-500 px-3 py-2 text-sm font-medium text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+              disabled={!canExport}
+              onClick={() => setExportModalOpen(true)}
+            >
               Export
             </button>
           </div>
@@ -436,6 +448,17 @@ export default function ReviewPage() {
           )}
         </div>
       </main>
+
+      {statement && (
+        <ExportModal
+          statementId={statementId}
+          statementFilename={statement.filename}
+          bankId={statement.bank}
+          isOpen={exportModalOpen}
+          onClose={() => setExportModalOpen(false)}
+          onExportComplete={handleExportComplete}
+        />
+      )}
     </div>
   );
 }

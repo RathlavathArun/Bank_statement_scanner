@@ -119,6 +119,7 @@ class Statement(Base):
     client = relationship("Client", back_populates="statements")
     uploader = relationship("User")
     transactions = relationship("Transaction", back_populates="statement", cascade="all, delete-orphan")
+    export_jobs = relationship("ExportJob", back_populates="statement", cascade="all, delete-orphan")
 
 
 # ─── 8.7 Table: transactions ────────────────────────────────
@@ -149,6 +150,26 @@ class Transaction(Base):
 
     # Relationships
     statement = relationship("Statement", back_populates="transactions")
+
+
+class ExportJob(Base):
+    __tablename__ = "export_jobs"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    statement_id = Column(String(36), ForeignKey("statements.id", ondelete="CASCADE"), nullable=False, index=True)
+    format = Column(String(30), nullable=False)
+    status = Column(String(20), nullable=False, default="PENDING")
+    file_path = Column(Text, nullable=True)
+    s3_key = Column(String(255), nullable=True)
+    download_url = Column(Text, nullable=True)
+    company_name = Column(String(255), nullable=True)
+    bank_ledger = Column(String(255), nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    statement = relationship("Statement", back_populates="export_jobs")
 
 
 # ─── 8.8 Table: ledger_mappings ──────────────────────────────
