@@ -234,6 +234,106 @@ def parse_pdf(file_path: Path, template: dict[str, Any], password: str | None = 
         )
 
 
+def _auto_detect_ocr_columns(
+    rows: list[list[str]],
+    date_formats: list[str],
+) -> dict[str, int | None]:
+    """Auto-detect column roles from OCR output by scanning cell content patterns.
+
+    Scans the first 20 data rows and scores each column index based on:
+      - Date patterns → date column
+      - Numeric/amount patterns → debit, credit, balance columns
+      - Long text without amounts → narration column
+
+    Returns a dict mapping role names to column indexes.
+    """
+    if not rows:
+        return {}
+
+    # Determine max column count
+    max_cols = max(len(row) for row in rows)
+    if max_cols < 2:
+        return {}
+
+    # Score each column
+    date_scores: list[int] = [0] * max_cols
+    amount_scores: list[int] = [0] * max_cols
+    text_lengths: list[int] = [0] * max_cols
+    serial_scores: list[int] = [0] * max_cols
+
+    # Scan up to 20 rows (skip the first row — likely header)
+    sample_rows = rows[1:21] if len(rows) > 1 else rows[:20]
+
+    date_pattern = re.compile(
+        r"^\s*\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\s*$|"
+        r"^\s*\d{4}-\d{1,2}-\d{1,2}\s*$|"
+        r"^\s*\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{2,4}\s*$",
+        re.IGNORECASE,
+    )
+    amount_pattern = re.compile(r"^\s*-?\(?[\d,]+(?:\.\d{1,2})?\)?\s*(?:Cr|Dr)?\s*$", re.IGNORECASE)
+    serial_pattern = re.compile(r"^\s*\d{1,3}\s*$")
+
+    for row in sample_rows:
+        for col_idx, cell in enumerate(row):
+            cell = cell.strip()
+            if not cell:
+                continue
+
+            if col_idx < max_cols:
+                if date_pattern.match(cell):
+                    date_scores[col_idx] += 1
+                if amount_pattern.match(cell):
+                    amount_scores[col_idx] += 1
+                if serial_pattern.match(cell) and col_idx == 0:
+                    serial_scores[col_idx] += 1
+                # Track text length for narration detection
+                if not amount_pattern.match(cell) and not date_pattern.match(cell):
+                    text_lengths[col_idx] += len(cell)
+
+    # Assign column roles
+    result: dict[str, int | None] = {
+        "date": None,
+        "narration": None,
+        "debit": None,
+        "credit": None,
+        "balance": None,
+    }
+
+    # Date: column with the highest date score
+    if max(date_scores) > 0:
+        result["date"] = date_scores.index(max(date_scores))
+
+    # Amount columns: columns with highest amount scores (up to 3)
+    amount_candidates = [
+        (col_idx, score) for col_idx, score in enumerate(amount_scores)
+        if score > 0 and col_idx != result["date"]
+    ]
+    amount_candidates.sort(key=lambda x: x[0])  # sort by column position
+
+    if len(amount_candidates) >= 3:
+        # Typical layout: withdrawal, deposit, balance (in order)
+        result["debit"] = amount_candidates[-3][0]
+        result["credit"] = amount_candidates[-2][0]
+        result["balance"] = amount_candidates[-1][0]
+    elif len(amount_candidates) == 2:
+        result["debit"] = amount_candidates[0][0]
+        result["credit"] = amount_candidates[1][0]
+    elif len(amount_candidates) == 1:
+        result["debit"] = amount_candidates[0][0]
+
+    # Narration: column with the longest total text that isn't date or amount
+    used_cols = {v for v in result.values() if v is not None}
+    narration_candidates = [
+        (col_idx, length) for col_idx, length in enumerate(text_lengths)
+        if col_idx not in used_cols and length > 0
+    ]
+    if narration_candidates:
+        narration_candidates.sort(key=lambda x: x[1], reverse=True)
+        result["narration"] = narration_candidates[0][0]
+
+    return result
+
+
 def _ocr_fallback(file_path: Path, template: dict[str, Any]) -> ParsedStatement:
     """Run OCR on a scanned PDF and convert the result to a ``ParsedStatement``.
 
@@ -264,20 +364,46 @@ def _ocr_fallback(file_path: Path, template: dict[str, Any]) -> ParsedStatement:
     try:
         parsed = parse_rows(plain_rows, template, source="ocr")
     except StatementParserError:
-        # Build transactions directly from OCR output
+        # Build transactions using auto-detected column positions
         date_formats = get_date_formats(template)
+        col_map = _auto_detect_ocr_columns(plain_rows, date_formats)
+        logger.info("OCR auto-detected columns: %s", col_map)
+
         transactions: list[ParsedTransaction] = []
         for idx, row in enumerate(ocr_result.rows):
             cells = [cell.text for cell in row.cells]
             if len(cells) < 2:
                 continue
-            txn_date = parse_date(cells[0], date_formats)
+
+            date_col = col_map.get("date")
+            txn_date = parse_date(cells[date_col], date_formats) if date_col is not None and date_col < len(cells) else None
+            if not txn_date:
+                # Try all cells for a date (handles column misdetection)
+                for ci, cell_text in enumerate(cells):
+                    txn_date = parse_date(cell_text, date_formats)
+                    if txn_date:
+                        break
             if not txn_date:
                 continue
-            narration = cells[1] if len(cells) > 1 else ""
-            debit = parse_amount(cells[2]) if len(cells) > 2 else None
-            credit = parse_amount(cells[3]) if len(cells) > 3 else None
-            balance = parse_amount(cells[4]) if len(cells) > 4 else None
+
+            narr_col = col_map.get("narration")
+            narration = cells[narr_col] if narr_col is not None and narr_col < len(cells) else ""
+            if not narration:
+                # Fall back: use the longest text cell that isn't a date or number
+                for ci, cell_text in enumerate(cells):
+                    if ci == date_col:
+                        continue
+                    if cell_text and not parse_amount(cell_text) and len(cell_text) > len(narration):
+                        narration = cell_text
+
+            debit_col = col_map.get("debit")
+            credit_col = col_map.get("credit")
+            balance_col = col_map.get("balance")
+
+            debit = parse_amount(cells[debit_col]) if debit_col is not None and debit_col < len(cells) else None
+            credit = parse_amount(cells[credit_col]) if credit_col is not None and credit_col < len(cells) else None
+            balance = parse_amount(cells[balance_col]) if balance_col is not None and balance_col < len(cells) else None
+
             transactions.append(
                 ParsedTransaction(
                     row_number=len(transactions) + 1,
@@ -304,6 +430,7 @@ def _ocr_fallback(file_path: Path, template: dict[str, Any]) -> ParsedStatement:
                 "row_count": len(transactions),
             },
         )
+
 
     # Augment successfully-parsed transactions with OCR confidence data.
     # ``parse_rows`` detected a header row; data rows follow it.  We match
