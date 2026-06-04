@@ -24,10 +24,11 @@ from statements.llm_tracking import (
 
 
 MODE_PATTERNS = {
-    "UPI": re.compile(r"\b(upi|phonepe|gpay|google pay|paytm|bhim)\b", re.I),
-    "NEFT": re.compile(r"\bneft\b", re.I),
-    "RTGS": re.compile(r"\brtgs\b", re.I),
-    "IMPS": re.compile(r"\bimps\b", re.I),
+    # UPI: match standalone 'UPI' AND Indian bank ref prefixes UPIAR/UPIAB/UPILR/UPIIB etc.
+    "UPI": re.compile(r"(^|[/|\s])upi[a-z]*(\b|[/|\s]|$)|\b(phonepe|gpay|google pay|paytm|bhim)\b", re.I),
+    "NEFT": re.compile(r"(^|[/|\s])neft(\b|[/|\s]|$)", re.I),
+    "RTGS": re.compile(r"(^|[/|\s])rtgs(\b|[/|\s]|$)", re.I),
+    "IMPS": re.compile(r"(^|[/|\s])imps(\b|[/|\s]|$)", re.I),
     "CHEQUE": re.compile(r"\b(chq|cheque|check)\b", re.I),
     "CASH": re.compile(r"\b(cash|atm|withdrawal)\b", re.I),
     "CARD": re.compile(r"\b(pos|debit card|credit card|card)\b", re.I),
@@ -161,7 +162,8 @@ def score_confidence(
         score += Decimal("0.05")
 
     # ── Short / ambiguous narration penalty ───────────────────────────────────
-    words = len(narration.split())
+    # Split on spaces AND slashes/pipes so "UPIAR/123/DR/NAME" counts as 4 tokens
+    words = len(re.split(r"[\s/|]+", narration.strip()))
     if words <= 2:
         score -= Decimal("0.10")   # e.g. "TFR" or "ATM" alone is very ambiguous
 
