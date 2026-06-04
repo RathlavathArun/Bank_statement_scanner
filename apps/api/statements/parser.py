@@ -718,11 +718,81 @@ def parse_date(value: str, formats: list[str]) -> date | None:
     if not cleaned:
         return None
 
+    # First attempt: Try parsing directly (fast path for correct dates)
     for fmt in formats:
         try:
             return datetime.strptime(cleaned, fmt).date()
         except ValueError:
             continue
+
+    # Second attempt: OCR typo correction and cleaning
+    # Remove spaces around typical separators like /, -, .
+    cleaned_ocr = re.sub(r'\s*([/\-\.])\s*', r'\1', cleaned)
+
+    for fmt in formats:
+        candidate = cleaned_ocr
+        has_alpha_format = any(char in fmt for char in ('%b', '%B', '%a', '%A'))
+
+        if not has_alpha_format:
+            # Numeric format: check if format expects spaces
+            if ' ' in fmt:
+                candidate = re.sub(r'\s+', ' ', candidate)
+            else:
+                candidate = re.sub(r'\s+', '', candidate)
+            # Standardize separators depending on format expectation
+            if '/' in fmt:
+                candidate = candidate.replace('-', '/').replace('.', '/')
+            elif '-' in fmt:
+                candidate = candidate.replace('/', '-').replace('.', '-')
+            elif '.' in fmt:
+                candidate = candidate.replace('/', '.').replace('-', '.')
+
+            # Correct OCR letter-to-digit substitutions
+            candidate = (
+                candidate.replace('O', '0')
+                .replace('o', '0')
+                .replace('I', '1')
+                .replace('l', '1')
+                .replace('i', '1')
+                .replace('S', '5')
+                .replace('s', '5')
+                .replace('Z', '2')
+                .replace('z', '2')
+            )
+        else:
+            # Word-based month format: keep single spaces
+            candidate = re.sub(r'\s+', ' ', candidate)
+            words = candidate.split()
+            cleaned_words = []
+            for word in words:
+                # Replace typos in words that are otherwise meant to be digits/separators
+                if re.match(r'^[0-9OolIiSsZz/\-\.]+$', word):
+                    word = (
+                        word.replace('O', '0')
+                        .replace('o', '0')
+                        .replace('I', '1')
+                        .replace('l', '1')
+                        .replace('i', '1')
+                        .replace('S', '5')
+                        .replace('s', '5')
+                        .replace('Z', '2')
+                        .replace('z', '2')
+                    )
+                    # Standardize separators in these numeric blocks
+                    if '/' in fmt:
+                        word = word.replace('-', '/').replace('.', '/')
+                    elif '-' in fmt:
+                        word = word.replace('/', '-').replace('.', '-')
+                    elif '.' in fmt:
+                        word = word.replace('/', '.').replace('-', '.')
+                cleaned_words.append(word)
+            candidate = " ".join(cleaned_words)
+
+        try:
+            return datetime.strptime(candidate, fmt).date()
+        except ValueError:
+            continue
+
     return None
 
 

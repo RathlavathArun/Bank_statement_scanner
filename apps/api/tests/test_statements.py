@@ -134,3 +134,28 @@ def test_readable_pdf_parse_warning_still_allows_review(monkeypatch):
         assert statement["file_type"] == "pdf"
         assert statement["status"] == "READY_FOR_REVIEW"
         assert "no transaction rows" in statement["error"]
+
+
+def test_fuzzy_date_parsing_for_ocr():
+    from statements.parser import parse_date
+    from datetime import date
+
+    formats = ["%d/%m/%Y", "%Y-%m-%d", "%d %b %Y"]
+
+    # Test clean directly parseable date
+    assert parse_date("12/10/2026", formats) == date(2026, 10, 12)
+
+    # Test space and letter substitutions in numeric format
+    assert parse_date("l2 / O5 / 2O26", formats) == date(2026, 5, 12)
+    assert parse_date("3l-O8-2O26", formats) == date(2026, 8, 31)
+    assert parse_date("2O26.O5.i2", formats) == date(2026, 5, 12)
+
+    # Test mixed cases and other character mappings
+    assert parse_date("o1/o1/2o26", formats) == date(2026, 1, 1)
+    assert parse_date("Z5-O5-2O26", formats) == date(2026, 5, 25)  # Z -> 2, O -> 0, o -> 0
+    assert parse_date("l5 S 2O26", ["%d %m %Y"]) == date(2026, 5, 15)  # l -> 1, S -> 5, O -> 0
+
+    # Test alphabet-based months (preserves the month word correctly while fixing numbers)
+    assert parse_date("l2  oCt  2O26", formats) == date(2026, 10, 12)
+    assert parse_date("O1  Jan  2O26", formats) == date(2026, 1, 1)
+
