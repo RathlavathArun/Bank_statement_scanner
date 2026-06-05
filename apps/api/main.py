@@ -18,16 +18,35 @@ from core.response import ApiResponse
 from db.database import init_db
 from auth.router import router as auth_router
 from statements.router import router as statements_router
+from statements.admin_router import router as admin_router
 from statements.websocket import ws_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifecycle — init DB on startup."""
+    """Application lifecycle — init DB and template manager on startup."""
     print("[START] Starting Bank Statement Extraction API...")
     await init_db()
     print("[OK] Database tables created / verified")
+    
+    # Initialize template manager for hot-reload
+    try:
+        from core.template_watcher import initialize_template_manager
+        initialize_template_manager()
+        print("[OK] Template manager initialized with hot-reload support")
+    except Exception as e:
+        print(f"[WARN] Could not initialize template manager: {e}")
+    
     yield
+    
+    # Shutdown template manager
+    try:
+        from core.template_watcher import shutdown_template_manager
+        shutdown_template_manager()
+        print("[OK] Template manager shutdown")
+    except Exception as e:
+        print(f"[WARN] Error during template manager shutdown: {e}")
+    
     print("[STOP] Shutting down API...")
 
 
@@ -54,6 +73,7 @@ app.add_middleware(
 
 # ─── Routers ─────────────────────────────────────────────────
 app.include_router(statements_router)
+app.include_router(admin_router)
 app.include_router(ws_router)
 app.include_router(auth_router)
 

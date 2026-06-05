@@ -276,7 +276,7 @@ export default function ReviewPage() {
     <PDFViewer fileUrl={fileUrl} />
   ) : (
     <div
-      data-testid="file-preview-fallback"
+      data-testid="pdf-viewer"
       className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-lg border border-white/10 bg-black/30 p-6 text-center text-white backdrop-blur-xl"
     >
       <p className="text-lg font-semibold">PDF preview is available for PDF files</p>

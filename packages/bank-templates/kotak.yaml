@@ -1,12 +1,17 @@
 bank_id: kotak
 display_name: "Kotak Mahindra Bank"
-bank_code: kotak
+bank_code: "KOTAK"
+bank_name: "Kotak Mahindra Bank Ltd."
+type: "pdf_text"
+
 extraction:
   headers:
     - "Date"
-    - "Transaction Date"
-    - "Value Date"
-    - "Posting Date"
+    - "Description"
+    - "Reference No."
+    - "Debit"
+    - "Credit"
+    - "Closing Balance"
   columns:
     date: 0
     narration: 1
@@ -23,3 +28,5 @@ fingerprint:
     - "kotak bank"
     - "Kotak Mahindra Bank"
     - "KMB"
+  regex:
+    - "IFSC\\s*:?\\s*KKBK0[0-9]{6}"

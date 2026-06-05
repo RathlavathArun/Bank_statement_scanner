@@ -1,0 +1,34 @@
+bank_id: bank_of_baroda
+display_name: "Bank of Baroda"
+bank_code: "BOB"
+bank_name: "Bank of Baroda"
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Bank of Baroda"
+    - "BANK OF BARODA"
+    - "BARODA CONNECT"
+    - "Account Statement"
+  regex:
+    - "IFSC\\s*:?\\s*BARB0[0-9A-Z]{6}"
+
+extraction:
+  skip_headers: 1
+  headers:
+    - "Date"
+    - "Description"
+    - "Cheque No"
+    - "Debit"
+    - "Credit"
+    - "Balance"
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

@@ -1,27 +1,28 @@
-bank_id: sbi
-display_name: "State Bank of India"
-bank_code: SBI
-bank_name: "State Bank of India"
+bank_id: yes_bank
+display_name: "Yes Bank"
+bank_code: "YES"
+bank_name: "Yes Bank Ltd."
 type: "pdf_text"
 
 fingerprint:
   keywords:
-    - "State Bank of India"
-    - "SBI"
-    - "Account Statement"
+    - "YES BANK"
+    - "Yes Bank Ltd"
+    - "YESBANK"
+    - "Statement of Account"
   regex:
-    - "IFSC\\s*:?\\s*SBIN0[0-9]{6}"
+    - "IFSC\\s*:?\\s*YESB0[0-9]{6}"
 
 extraction:
+  skip_headers: 1
   headers:
-    - "Txn Date"
+    - "Transaction Date"
     - "Value Date"
     - "Description"
-    - "Ref No./Cheque No."
+    - "Cheque No/Reference No"
     - "Debit"
     - "Credit"
     - "Balance"
-
   columns:
     date: 0
     value_date: 1
@@ -30,7 +31,6 @@ extraction:
     debit: 4
     credit: 5
     balance: 6
-
   formats:
     date: "%d/%m/%Y"
     number: "indian"

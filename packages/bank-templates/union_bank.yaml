@@ -1,0 +1,34 @@
+bank_id: union_bank
+display_name: "Union Bank of India"
+bank_code: "UNION"
+bank_name: "Union Bank of India"
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Union Bank of India"
+    - "UNION BANK OF INDIA"
+    - "UNIONBANK"
+    - "Account Statement"
+  regex:
+    - "IFSC\\s*:?\\s*UBIN0[0-9]{6}"
+
+extraction:
+  skip_headers: 1
+  headers:
+    - "Date"
+    - "Particulars"
+    - "Cheque No"
+    - "Debit"
+    - "Credit"
+    - "Balance"
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

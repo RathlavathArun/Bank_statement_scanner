@@ -1,27 +1,28 @@
-bank_id: sbi
-display_name: "State Bank of India"
-bank_code: SBI
-bank_name: "State Bank of India"
+bank_id: au_small_finance
+display_name: "AU Small Finance Bank"
+bank_code: "AU"
+bank_name: "AU Small Finance Bank Ltd."
 type: "pdf_text"
 
 fingerprint:
   keywords:
-    - "State Bank of India"
-    - "SBI"
+    - "AU Small Finance Bank"
+    - "AU SMALL FINANCE BANK"
+    - "AUBANK"
     - "Account Statement"
   regex:
-    - "IFSC\\s*:?\\s*SBIN0[0-9]{6}"
+    - "IFSC\\s*:?\\s*AUBL0[0-9]{6}"
 
 extraction:
+  skip_headers: 1
   headers:
-    - "Txn Date"
+    - "Transaction Date"
     - "Value Date"
-    - "Description"
-    - "Ref No./Cheque No."
+    - "Narration"
+    - "Reference No"
     - "Debit"
     - "Credit"
     - "Balance"
-
   columns:
     date: 0
     value_date: 1
@@ -30,7 +31,6 @@ extraction:
     debit: 4
     credit: 5
     balance: 6
-
   formats:
     date: "%d/%m/%Y"
     number: "indian"

@@ -1,27 +1,28 @@
-bank_id: sbi
-display_name: "State Bank of India"
-bank_code: SBI
-bank_name: "State Bank of India"
+bank_id: rbl
+display_name: "RBL Bank"
+bank_code: "RBL"
+bank_name: "RBL Bank Ltd."
 type: "pdf_text"
 
 fingerprint:
   keywords:
-    - "State Bank of India"
-    - "SBI"
+    - "RBL Bank"
+    - "RATNAKAR BANK"
+    - "RBLBANK"
     - "Account Statement"
   regex:
-    - "IFSC\\s*:?\\s*SBIN0[0-9]{6}"
+    - "IFSC\\s*:?\\s*RATN0[0-9]{6}"
 
 extraction:
+  skip_headers: 1
   headers:
     - "Txn Date"
     - "Value Date"
     - "Description"
-    - "Ref No./Cheque No."
+    - "Cheque/Ref No"
     - "Debit"
     - "Credit"
     - "Balance"
-
   columns:
     date: 0
     value_date: 1
@@ -30,7 +31,6 @@ extraction:
     debit: 4
     credit: 5
     balance: 6
-
   formats:
     date: "%d/%m/%Y"
     number: "indian"

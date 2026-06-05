@@ -236,3 +236,27 @@ class LLMUsage(Base):
     completion_tokens = Column(Integer, nullable=False, default=0)
     cost_usd = Column(Numeric(10, 6), nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+# ─── 8.10 Table: bank_templates ─────────────────────────────
+class BankTemplate(Base):
+    __tablename__ = "bank_templates"
+    __table_args__ = (
+        UniqueConstraint("bank_code", name="uq_bank_code"),
+    )
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    bank_code = Column(String(50), nullable=False, unique=True, index=True)
+    bank_name = Column(String(255), nullable=False)
+    template_path = Column(Text, nullable=False)  # Path to YAML file or S3 key
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    uploaded_by = Column(String(36), ForeignKey("users.id"), nullable=True)
+    template_format = Column(String(20), nullable=False, default="yaml")  # yaml | json
+    extraction_type = Column(String(50), nullable=False, default="pdf_text")  # pdf_text | excel | csv
+    metadata_ = Column("metadata", JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    # Relationships
+    uploader = relationship("User")

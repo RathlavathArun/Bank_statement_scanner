@@ -1,12 +1,17 @@
 bank_id: axis
 display_name: "Axis Bank"
-bank_code: axis
+bank_code: "AXIS"
+bank_name: "Axis Bank Ltd."
+type: "pdf_text"
+
 extraction:
   headers:
     - "Date"
-    - "Tran Date"
-    - "Transaction Date"
-    - "VALUE DATE"
+    - "Particulars"
+    - "Chq./Ref.No."
+    - "Debit Amount"
+    - "Credit Amount"
+    - "Balance"
   columns:
     date: 0
     narration: 1
@@ -22,3 +27,5 @@ fingerprint:
     - "AXISBANK"
     - "axis bank limited"
     - "AXIS BANK"
+  regex:
+    - "IFSC\\s*:?\\s*UTIB0[0-9]{6}"

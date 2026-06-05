@@ -1,0 +1,36 @@
+bank_id: idfc_first
+display_name: "IDFC FIRST Bank"
+bank_code: "IDFC"
+bank_name: "IDFC FIRST Bank Ltd."
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "IDFC FIRST Bank"
+    - "IDFCFIRSTBANK"
+    - "IDFC Bank"
+    - "Account Statement"
+  regex:
+    - "IFSC\\s*:?\\s*IDFB0[0-9]{6}"
+
+extraction:
+  skip_headers: 1
+  headers:
+    - "Transaction Date"
+    - "Value Date"
+    - "Narration"
+    - "Cheque/Ref No"
+    - "Withdrawal"
+    - "Deposit"
+    - "Closing Balance"
+  columns:
+    date: 0
+    value_date: 1
+    narration: 2
+    reference: 3
+    debit: 4
+    credit: 5
+    balance: 6
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"
