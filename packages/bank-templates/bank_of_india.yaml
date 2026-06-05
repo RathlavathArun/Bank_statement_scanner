@@ -1,0 +1,34 @@
+bank_id: bank_of_india
+display_name: "Bank of India"
+bank_code: "BOI"
+bank_name: "Bank of India"
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Bank of India"
+    - "BANK OF INDIA"
+    - "BOI"
+    - "Account Statement"
+  regex:
+    - "IFSC\\s*:?\\s*BKID0[0-9]{6}"
+
+extraction:
+  skip_headers: 1
+  headers:
+    - "Date"
+    - "Narration"
+    - "Chq No"
+    - "Debit"
+    - "Credit"
+    - "Balance"
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

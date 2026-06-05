@@ -319,6 +319,14 @@ export default function DashboardPage() {
             <span className="text-sm font-medium text-slate-600 dark:text-slate-300">
               {user?.firm?.name || "My Firm"}
             </span>
+            <Link href="/admin">
+              <Button
+                variant="outline"
+                className="glass-input h-9 text-sm"
+              >
+                Admin
+              </Button>
+            </Link>
             <Button
               variant="outline"
               onClick={handleLogout}

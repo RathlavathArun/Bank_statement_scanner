@@ -1,0 +1,32 @@
+bank_code: CBI
+bank_id: central_bank_of_india
+bank_name: Central Bank of India
+display_name: Central Bank of India
+extraction:
+  columns:
+    balance: 5
+    credit: 4
+    date: 0
+    debit: 3
+    narration: 1
+    reference: 2
+  formats:
+    date: '%d/%m/%Y'
+    number: indian
+  headers:
+  - Date
+  - Narration
+  - Cheque No
+  - Debit
+  - Credit
+  - Balance
+  skip_headers: 1
+fingerprint:
+  keywords:
+  - Central Bank of India
+  - CENTRAL BANK OF INDIA
+  - CBI
+  - Account Statement
+  regex:
+  - IFSC\s*:?\s*CBIN0[0-9]{6}
+type: pdf_text

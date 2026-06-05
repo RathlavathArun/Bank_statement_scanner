@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
     window.localStorage.setItem("access_token", "e2e-token");
   });
 
-  await page.route("**/v1/auth/me", async (route) => {
+  await page.route("**/api/v1/auth/me", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
@@ -17,7 +17,7 @@ test.beforeEach(async ({ page }) => {
     });
   });
 
-  await page.route("**/v1/statements?page=1&size=20", async (route) => {
+  await page.route("**/api/v1/statements?page=1&size=20", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
@@ -41,7 +41,7 @@ test.beforeEach(async ({ page }) => {
     });
   });
 
-  await page.route(`**/v1/statements/${statementId}/status`, async (route) => {
+  await page.route(`**/api/v1/statements/${statementId}/status`, async (route) => {
     if (route.request().method() === "PATCH") {
       await route.fulfill({
         contentType: "application/json",
@@ -64,7 +64,7 @@ test.beforeEach(async ({ page }) => {
     });
   });
 
-  await page.route(`**/v1/statements/${statementId}/transactions?page=1&size=50`, async (route) => {
+  await page.route(`**/api/v1/statements/${statementId}/transactions?page=1&size=50`, async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
@@ -103,7 +103,7 @@ test.beforeEach(async ({ page }) => {
     });
   });
 
-  await page.route(`**/v1/statements/${statementId}/transactions/tx-1`, async (route) => {
+  await page.route(`**/api/v1/statements/${statementId}/transactions/tx-1`, async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ success: true, data: { id: "tx-1", narration: "Updated vendor payment" } }),

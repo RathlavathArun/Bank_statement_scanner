@@ -2,6 +2,7 @@
   "name": "bank-statement-scanner",
   "private": true,
   "scripts": {
+    "test": "node e2e/run-e2e.cjs",
     "e2e": "playwright test"
   },
   "devDependencies": {

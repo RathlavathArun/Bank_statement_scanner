@@ -1,0 +1,34 @@
+bank_id: federal
+display_name: "Federal Bank"
+bank_code: "FEDERAL"
+bank_name: "Federal Bank Ltd."
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Federal Bank"
+    - "FEDERAL BANK"
+    - "FEDBANK"
+    - "Account Statement"
+  regex:
+    - "IFSC\\s*:?\\s*FDRL0[0-9]{6}"
+
+extraction:
+  skip_headers: 1
+  headers:
+    - "Date"
+    - "Particulars"
+    - "Cheque No"
+    - "Debit"
+    - "Credit"
+    - "Balance"
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+  formats:
+    date: "%d-%m-%Y"
+    number: "indian"

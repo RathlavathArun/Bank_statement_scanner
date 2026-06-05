@@ -1,0 +1,22 @@
+version: 1
+failure_alert_threshold: 0.05
+minimum_samples_for_alert: 20
+
+covered_banks:
+  - axis
+  - au_small_finance
+  - bank_of_baroda
+  - bank_of_india
+  - canara
+  - federal
+  - hdfc
+  - icici
+  - idfc_first
+  - indusind
+  - kotak
+  - pnb
+  - rbl
+  - sbi
+  - union_bank
+  - yes_bank
+
