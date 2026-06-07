@@ -28,3 +28,10 @@ variable "vpc_cidr" {
   type        = string
   default     = "10.0.0.0/16"
 }
+
+variable "jwt_secret" {
+  description = "Secret key for JWT token signing"
+  type        = string
+  sensitive   = true
+  default     = "change-this-in-production-jwt-secret-key-2026"
+}

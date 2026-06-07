@@ -38,7 +38,7 @@ export default function CacheStatsPage() {
       const token =
         localStorage.getItem("access_token") ||
         localStorage.getItem("token");
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
 
       const response = await fetch("/api/admin/banks/cache/stats", {
         headers,
@@ -65,7 +65,7 @@ export default function CacheStatsPage() {
       const token =
         localStorage.getItem("access_token") ||
         localStorage.getItem("token");
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
 
       const response = await fetch("/api/admin/banks/cache/clear", {
         method: "DELETE",

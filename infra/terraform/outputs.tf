@@ -17,3 +17,18 @@ output "redis_endpoint" {
   description = "The connection endpoint for the ElastiCache Redis cluster"
   value       = aws_elasticache_cluster.redis.cache_nodes[0].address
 }
+
+output "ecr_web_repo_url" {
+  description = "ECR repository URL for the web image"
+  value       = aws_ecr_repository.web.repository_url
+}
+
+output "ecr_api_repo_url" {
+  description = "ECR repository URL for the API image"
+  value       = aws_ecr_repository.api.repository_url
+}
+
+output "api_discovery_dns" {
+  description = "Cloud Map DNS name for internal API service discovery"
+  value       = "api.${var.project_name}.local"
+}
