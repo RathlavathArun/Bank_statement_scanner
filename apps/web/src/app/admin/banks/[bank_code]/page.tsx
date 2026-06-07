@@ -27,12 +27,12 @@ export default function EditBankPage() {
     description: "",
     isActive: true,
   });
-
+const loadBank = async () => {
   useEffect(() => {
     loadBank();
   }, [bankCode]);
 
-  const loadBank = async () => {
+  
     try {
       setLoading(true);
       const data = await getBank(bankCode);

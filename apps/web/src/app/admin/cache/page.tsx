@@ -27,11 +27,12 @@ export default function CacheStatsPage() {
   const [error, setError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
 
+  const loadStats = async () => {
   useEffect(() => {
     loadStats();
   }, []);
 
-  const loadStats = async () => {
+  
     try {
       setLoading(true);
       const token =

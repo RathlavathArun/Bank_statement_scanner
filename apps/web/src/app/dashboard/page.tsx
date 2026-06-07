@@ -305,8 +305,7 @@ export default function DashboardPage() {
       <div className="absolute top-1/4 left-0 w-[600px] h-[600px] bg-purple-400/20 rounded-full mix-blend-multiply filter blur-[120px] opacity-70 animate-blob animation-delay-2000 pointer-events-none"></div>
 
       <header className="sticky top-0 z-50 w-full glass border-b border-white/20 dark:border-slate-800/50">
-        <div className="container mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
+<div className="container mx-auto px-4 py-2 md:py-0 min-h-16 flex flex-wrap items-center justify-between gap-2">          <div className="flex items-center gap-2">
             <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-600 to-violet-600 flex items-center justify-center text-white font-bold shadow-lg">
               B
             </div>
@@ -315,9 +314,8 @@ export default function DashboardPage() {
             </span>
           </div>
 
-          <div className="flex items-center gap-4">
-            <span className="text-sm font-medium text-slate-600 dark:text-slate-300">
-              {user?.firm?.name || "My Firm"}
+          <div className="flex flex-wrap items-center gap-2 md:gap-4">
+<span className="hidden sm:block text-sm font-medium text-slate-600 dark:text-slate-300">              {user?.firm?.name || "My Firm"}
             </span>
             <Link href="/admin">
               <Button
@@ -327,6 +325,14 @@ export default function DashboardPage() {
                 Admin
               </Button>
             </Link>
+            <Link href="/guide">
+  <Button
+    variant="outline"
+    className="glass-input h-9 text-sm"
+  >
+    Guide
+  </Button>
+</Link>
             <Button
               variant="outline"
               onClick={handleLogout}
@@ -339,8 +345,7 @@ export default function DashboardPage() {
       </header>
 
       <main className="container mx-auto px-4 py-8 relative z-10">
-        <div className="flex items-center justify-between mb-8">
-          <div>
+<div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-8">          <div>
             <h1 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
               Welcome back, {user?.full_name?.split(" ")[0] || "User"}
             </h1>
@@ -350,8 +355,7 @@ export default function DashboardPage() {
           </div>
 
           <Button
-            className="bg-blue-600 hover:bg-blue-700 text-white shadow-md transition-all"
-            onClick={() => fileInputRef.current?.click()}
+           className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white shadow-md transition-all"            onClick={() => fileInputRef.current?.click()}
           >
             + Upload Statement
           </Button>
@@ -452,9 +456,8 @@ export default function DashboardPage() {
                 />
               </div>
             ) : (
-              <div className="p-4">
-                <div className="grid grid-cols-4 text-sm font-semibold text-slate-500 border-b pb-2">
-                  <span>Filename</span>
+                  <div className="p-4 overflow-x-auto">
+                  <div className="grid grid-cols-4 min-w-[700px] text-sm font-semibold text-slate-500 border-b pb-2">                  <span>Filename</span>
                   <span>Bank</span>
                   <span>Status</span>
                   <span>Action</span>
@@ -463,8 +466,7 @@ export default function DashboardPage() {
                 {statements.map((stmt) => (
                   <div
                     key={stmt.id}
-                    className="grid grid-cols-4 text-sm py-3 border-b last:border-b-0 text-slate-700 dark:text-slate-300 items-center"
-                  >
+                    className="grid grid-cols-4 min-w-[700px] text-sm py-3 border-b last:border-b-0 text-slate-700 dark:text-slate-300 items-center"                  >
                     <span className="truncate pr-4">{stmt.filename}</span>
                     <span className="flex items-center gap-2">
                       {stmt.bank}
@@ -554,8 +556,7 @@ export default function DashboardPage() {
               Extracted Transactions
             </h2>
 
-            <div className="grid grid-cols-5 text-sm font-semibold text-slate-500 border-b pb-2">
-              <span>Date</span>
+            <div className="grid grid-cols-5 min-w-[900px] text-sm font-semibold text-slate-500 border-b pb-2">              <span>Date</span>
               <span>Description</span>
               <span>Debit</span>
               <span>Credit</span>
@@ -565,8 +566,7 @@ export default function DashboardPage() {
             {transactions.map((txn, index) => (
               <div
                 key={txn.id || index}
-                className="grid grid-cols-5 text-sm py-3 border-b last:border-b-0 text-slate-700 dark:text-slate-300"
-              >
+                className="grid grid-cols-5 min-w-[900px] text-sm py-3 border-b last:border-b-0 text-slate-700 dark:text-slate-300"              >
                 <span>{txn.date}</span>
                 <span>{txn.description}</span>
                 <span>{txn.debit || "-"}</span>

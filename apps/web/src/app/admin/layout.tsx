@@ -16,9 +16,21 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
             <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
               Bank Statement Admin
             </h1>
-            <Link href="/" className="text-gray-600 hover:text-gray-900 text-sm">
-              ← Back to App
-            </Link>
+            <div className="flex items-center gap-4">
+  <Link
+    href="/"
+    className="text-gray-600 hover:text-gray-900 text-sm"
+  >
+    ← Back to App
+  </Link>
+
+  <Link
+    href="/dashboard"
+    className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+  >
+    Dashboard
+  </Link>
+</div>
           </div>
         </div>
       </header>
