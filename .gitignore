@@ -33,3 +33,7 @@ htmlcov/
 Thumbs.db
 apps/api/uploads/
 apps/api/bank_statements.db
+
+.terraform/
+*.tfstate
+*.tfstate.backup
