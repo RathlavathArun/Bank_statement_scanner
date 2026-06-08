@@ -42,21 +42,15 @@ export default function LoginPage() {
     }
   };
 
- return (
-<div className="flex items-center justify-center min-h-screen relative overflow-hidden px-4">
-   <Link
-  href="/"
-  aria-label="Go back to home page"
-  className="absolute top-6 left-6 ..."
->
-  ← Back to App
-</Link>
+  return (
+    <div className="flex items-center justify-center min-h-screen relative overflow-hidden">
       {/* Decorative blurred shapes behind the card */}
       <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-blue-500/30 rounded-full mix-blend-multiply filter blur-3xl opacity-50 animate-blob"></div>
       <div className="absolute top-1/3 right-1/4 w-72 h-72 bg-purple-500/30 rounded-full mix-blend-multiply filter blur-3xl opacity-50 animate-blob animation-delay-2000"></div>
       <div className="absolute -bottom-8 left-1/3 w-80 h-80 bg-pink-500/30 rounded-full mix-blend-multiply filter blur-3xl opacity-50 animate-blob animation-delay-4000"></div>
 
-<Card className="w-full max-w-[420px] glass-card border-white/40 shadow-2xl relative z-10 p-2">        <CardHeader className="space-y-1">
+      <Card className="w-[420px] glass-card border-white/40 shadow-2xl relative z-10 p-2">
+        <CardHeader className="space-y-1">
           <CardTitle className="text-3xl font-bold tracking-tight text-center bg-gradient-to-br from-slate-800 to-slate-500 dark:from-white dark:to-slate-400 bg-clip-text text-transparent">
             Welcome back
           </CardTitle>
@@ -66,26 +60,21 @@ export default function LoginPage() {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
-          {error && (
-        <div
-          role="alert"
-          aria-live="polite"
-          className="p-3 text-sm text-red-500 bg-red-500/10 border border-red-500/20 rounded-md"
-        >
-         {error}
-       </div>
+            {error && (
+              <div className="p-3 text-sm text-red-500 bg-red-500/10 border border-red-500/20 rounded-md">
+                {error}
+              </div>
             )}
             <div className="space-y-2">
               <Label htmlFor="email" className="text-slate-700 dark:text-slate-300">Email</Label>
-            <Input
-  id="email"
-  name="email"
-  type="email"
-  autoComplete="email"
-  placeholder="m@example.com"
-  required
-  className="glass-input h-11"
-/>
+              <Input 
+                id="email" 
+                name="email" 
+                type="email" 
+                placeholder="m@example.com" 
+                required 
+                className="glass-input h-11"
+              />
             </div>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -102,9 +91,10 @@ export default function LoginPage() {
                 className="glass-input h-11"
               />
             </div>
-            <Button
-             type="submit"
-             disabled={loading}
+            <Button 
+              className="w-full h-11 bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-700 hover:to-violet-700 text-white shadow-lg transition-all" 
+              type="submit" 
+              disabled={loading}
             >
               {loading ? "Signing in..." : "Sign in"}
             </Button>
