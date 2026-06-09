@@ -3,8 +3,13 @@ output "aws_region" {
   value       = var.aws_region
 }
 
+output "cloudfront_domain" {
+  description = "The secure HTTPS CloudFront domain for the website"
+  value       = aws_cloudfront_distribution.main.domain_name
+}
+
 output "alb_dns_name" {
-  description = "The DNS name of the Application Load Balancer"
+  description = "The raw HTTP DNS name of the Application Load Balancer"
   value       = aws_lb.main.dns_name
 }
 
