@@ -22,8 +22,11 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
-ROOT_DIR = Path(__file__).resolve().parents[3]
-TEMPLATE_DIR = ROOT_DIR / "packages" / "bank-templates"
+if Path("/app/bank-templates").exists():
+    TEMPLATE_DIR = Path("/app/bank-templates")
+else:
+    ROOT_DIR = Path(__file__).resolve().parents[3]
+    TEMPLATE_DIR = ROOT_DIR / "packages" / "bank-templates"
 
 
 class StatementParserError(Exception):

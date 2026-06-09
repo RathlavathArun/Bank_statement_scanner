@@ -344,7 +344,10 @@ async def download_template(
     """
     try:
         from pathlib import Path
-        template_path = Path(__file__).parent.parent.parent.parent / "packages" / "bank-templates" / f"{bank_code.lower()}.yaml"
+        if Path("/app/bank-templates").exists():
+            template_path = Path("/app/bank-templates") / f"{bank_code.lower()}.yaml"
+        else:
+            template_path = Path(__file__).parent.parent.parent.parent / "packages" / "bank-templates" / f"{bank_code.lower()}.yaml"
         
         if not template_path.exists():
             raise HTTPException(status_code=404, detail="Template file not found")

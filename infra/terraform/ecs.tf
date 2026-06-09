@@ -3,15 +3,18 @@ resource "aws_ecs_cluster" "main" {
 }
 
 resource "aws_ecr_repository" "web" {
-  name = "${var.project_name}-web"
+  name         = "${var.project_name}-web"
+  force_delete = true
 }
 
 resource "aws_ecr_repository" "api" {
-  name = "${var.project_name}-api"
+  name         = "${var.project_name}-api"
+  force_delete = true
 }
 
 resource "aws_ecr_repository" "parser" {
-  name = "${var.project_name}-parser"
+  name         = "${var.project_name}-parser"
+  force_delete = true
 }
 
 # --- IAM Roles ---
