@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -161,7 +161,7 @@ async def test_download_rejects_expired_exports(client: AsyncClient, db: AsyncSe
     export_id = created.json()["export_id"]
 
     job = await db.get(ExportJob, export_id)
-    job.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1)
+    job.expires_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
     await db.commit()
 
     response = await client.get(f"/v1/exports/{export_id}/download")
