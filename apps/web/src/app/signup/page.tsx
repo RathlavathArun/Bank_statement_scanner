@@ -8,6 +8,8 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
+import { readApiResponse } from "@/lib/utils";
+
 export default function SignupPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -29,11 +31,11 @@ export default function SignupPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password, full_name, firm_name }),
       });
-      const data = await res.json();
+      const data = await readApiResponse(res);
 
       if (res.ok && data.success) {
         localStorage.setItem("access_token", data.data.tokens.access_token);
-        router.push("/dashboard");
+        router.push(`/verify-email?email=${encodeURIComponent(email as string)}`);
       } else {
         setError(data.detail || data.error || data.message || "Signup failed");
       }

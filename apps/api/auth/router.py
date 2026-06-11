@@ -1,14 +1,18 @@
 """
-Auth API router — signup, login, refresh, and profile endpoints.
+Auth API router — signup, login, refresh, profile, email verification,
+and password reset endpoints.
 PRD Section 9.2
 """
-from fastapi import APIRouter, Depends, HTTPException, status
+import logging
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from db.database import get_db
 from db.models import User, Firm, FirmMember
 from auth.schemas import (
     SignupRequest, LoginRequest, RefreshRequest,
+    VerifyEmailRequest, ResendOtpRequest,
+    ForgotPasswordRequest, ResetPasswordRequest,
     TokenResponse, UserResponse,
 )
 from auth.service import (
@@ -16,17 +20,25 @@ from auth.service import (
     create_access_token, create_refresh_token, decode_token,
 )
 from auth.dependencies import get_current_user
+from auth.otp import create_otp, verify_otp
+from auth.email_service import send_otp_email
 from core.response import ApiResponse
 import jwt as pyjwt
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/auth", tags=["Authentication"])
 
 
 @router.post("/signup", status_code=status.HTTP_201_CREATED)
-async def signup(req: SignupRequest, db: AsyncSession = Depends(get_db)):
+async def signup(
+    req: SignupRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
     """
     Register a new user and create their firm.
-    Returns access + refresh tokens.
+    Sends email verification OTP. Returns access + refresh tokens.
     """
     # Check if email already exists
     existing = await db.execute(select(User).where(User.email == req.email))
@@ -69,9 +81,16 @@ async def signup(req: SignupRequest, db: AsyncSession = Depends(get_db)):
     db.add(membership)
     await db.flush()
 
+    # Generate OTP and send verification email
+    otp_code = await create_otp(db, email=req.email, purpose="verify_email", user_id=user.id)
+    if otp_code:
+        background_tasks.add_task(send_otp_email, req.email, otp_code, "verify_email")
+
     # Generate tokens
     access_token = create_access_token(user.id, firm.id)
     refresh_token = create_refresh_token(user.id)
+
+    await db.commit()
 
     return ApiResponse.ok(
         data={
@@ -79,6 +98,7 @@ async def signup(req: SignupRequest, db: AsyncSession = Depends(get_db)):
                 "id": user.id,
                 "email": user.email,
                 "full_name": user.full_name,
+                "email_verified": False,
             },
             "firm": {
                 "id": firm.id,
@@ -97,7 +117,7 @@ async def signup(req: SignupRequest, db: AsyncSession = Depends(get_db)):
 async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     """
     Authenticate with email + password.
-    Returns access + refresh tokens.
+    Returns access + refresh tokens and email_verified status.
     """
     result = await db.execute(select(User).where(User.email == req.email))
     user = result.scalar_one_or_none()
@@ -124,6 +144,7 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
                 "id": user.id,
                 "email": user.email,
                 "full_name": user.full_name,
+                "email_verified": user.email_verified,
             },
             "tokens": TokenResponse(
                 access_token=access_token,
@@ -131,6 +152,163 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
                 expires_in=900,
             ).model_dump(),
         }
+    )
+
+
+@router.post("/verify-email")
+async def verify_email(req: VerifyEmailRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Verify a user's email address using the 6-digit OTP code.
+    """
+    # Find the user
+    result = await db.execute(select(User).where(User.email == req.email))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    if user.email_verified:
+        return ApiResponse.ok(data={"message": "Email already verified"})
+
+    # Verify the OTP
+    is_valid = await verify_otp(db, email=req.email, code=req.code, purpose="verify_email")
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification code",
+        )
+
+    # Mark email as verified
+    user.email_verified = True
+    await db.commit()
+
+    # Generate fresh tokens
+    membership_result = await db.execute(
+        select(FirmMember).where(FirmMember.user_id == user.id)
+    )
+    membership = membership_result.scalar_one_or_none()
+    firm_id = membership.firm_id if membership else None
+
+    access_token = create_access_token(user.id, firm_id)
+    refresh_token = create_refresh_token(user.id)
+
+    return ApiResponse.ok(
+        data={
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+                "email_verified": True,
+            },
+            "tokens": TokenResponse(
+                access_token=access_token,
+                refresh_token=refresh_token,
+                expires_in=900,
+            ).model_dump(),
+        }
+    )
+
+
+@router.post("/resend-otp")
+async def resend_otp(
+    req: ResendOtpRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Resend an OTP code. Rate-limited to 5 per email per hour.
+    """
+    # Find user by email
+    result = await db.execute(select(User).where(User.email == req.email))
+    user = result.scalar_one_or_none()
+
+    # Always return 200 to prevent email enumeration
+    if not user:
+        return ApiResponse.ok(data={"message": "If the email exists, a new code has been sent."})
+
+    # For verify_email, skip if already verified
+    if req.purpose == "verify_email" and user.email_verified:
+        return ApiResponse.ok(data={"message": "Email is already verified."})
+
+    otp_code = await create_otp(db, email=req.email, purpose=req.purpose, user_id=user.id)
+    if otp_code is None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many OTP requests. Please try again later.",
+        )
+
+    await db.commit()
+    background_tasks.add_task(send_otp_email, req.email, otp_code, req.purpose)
+
+    return ApiResponse.ok(data={"message": "If the email exists, a new code has been sent."})
+
+
+@router.post("/forgot-password")
+async def forgot_password(
+    req: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Initiate password reset — sends OTP to email.
+    Always returns 200 to prevent email enumeration.
+    """
+    result = await db.execute(select(User).where(User.email == req.email))
+    user = result.scalar_one_or_none()
+
+    if user:
+        otp_code = await create_otp(db, email=req.email, purpose="reset_password", user_id=user.id)
+        if otp_code:
+            await db.commit()
+            background_tasks.add_task(send_otp_email, req.email, otp_code, "reset_password")
+        else:
+            # Rate limited — commit anyway to save the state
+            await db.commit()
+            logger.warning("Password reset OTP rate-limited for %s", req.email)
+    else:
+        logger.info("Password reset requested for non-existent email: %s", req.email)
+
+    # Always return success to prevent email enumeration
+    return ApiResponse.ok(
+        data={"message": "If an account with that email exists, a reset code has been sent."}
+    )
+
+
+@router.post("/reset-password")
+async def reset_password(req: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Reset password using OTP code. Validates OTP and updates the password.
+    """
+    # Find user
+    result = await db.execute(select(User).where(User.email == req.email))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset code",
+        )
+
+    # Verify OTP
+    is_valid = await verify_otp(db, email=req.email, code=req.code, purpose="reset_password")
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset code",
+        )
+
+    # Update password
+    user.password_hash = hash_password(req.new_password)
+    
+    # If they successfully reset their password via email OTP, their email is verified!
+    if not user.email_verified:
+        user.email_verified = True
+        
+    await db.commit()
+
+    return ApiResponse.ok(
+        data={"message": "Password has been reset successfully. Please log in with your new password."}
     )
 
 

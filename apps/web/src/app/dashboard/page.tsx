@@ -110,10 +110,15 @@ export default function DashboardPage() {
           },
         });
 
-        const data = await res.json();
+        const data = await readApiResponse(res);
 
         if (data.success) {
-          setUser(data.data.user);
+          const userData = data.data.user;
+          if (userData.email_verified === false) {
+            router.push(`/verify-email?email=${encodeURIComponent(userData.email)}`);
+            return;
+          }
+          setUser(userData);
         } else {
           localStorage.removeItem("access_token");
           router.push("/login");

@@ -9,9 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
-from db.models import ExportJob, Statement, Transaction
+from db.models import ExportJob, Statement, Transaction, User
+from auth.dependencies import get_current_user
 from statements.exporters import generate_csv, generate_excel, generate_json, generate_tally_xml
 from statements.schemas import ExportJobResponse, ExportRequest
+from statements.router import verify_statement_access
 
 
 export_router = APIRouter(tags=["exports"])
@@ -74,13 +76,6 @@ def _serialize_transaction(tx: Transaction) -> dict[str, Any]:
     }
 
 
-async def _load_statement(db: AsyncSession, statement_id: str) -> Statement:
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
-    return stmt
-
-
 async def _load_transactions(db: AsyncSession, statement_id: str) -> list[Transaction]:
     result = await db.execute(
         select(Transaction)
@@ -95,8 +90,9 @@ async def create_export(
     statement_id: str,
     body: ExportRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    stmt = await _load_statement(db, statement_id)
+    stmt = await verify_statement_access(db, statement_id, current_user)
     if stmt.status not in READY_STATUSES:
         raise HTTPException(
             status_code=409,
@@ -201,8 +197,9 @@ async def create_export(
 async def list_exports(
     statement_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    await _load_statement(db, statement_id)
+    await verify_statement_access(db, statement_id, current_user)
     result = await db.execute(
         select(ExportJob)
         .where(ExportJob.statement_id == statement_id)
@@ -228,11 +225,16 @@ async def list_exports(
 async def download_export(
     export_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     result = await db.execute(select(ExportJob).where(ExportJob.id == export_id))
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Export not found")
+    
+    # Verify access to the associated statement
+    await verify_statement_access(db, job.statement_id, current_user)
+
     if job.status != "READY":
         raise HTTPException(status_code=409, detail=f"Export not ready. Status: {job.status}")
     if job.expires_at and job.expires_at < utcnow():
@@ -254,11 +256,15 @@ async def download_export(
 async def delete_export(
     export_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     result = await db.execute(select(ExportJob).where(ExportJob.id == export_id))
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Export not found")
+
+    # Verify access to the associated statement
+    await verify_statement_access(db, job.statement_id, current_user)
 
     if job.file_path and os.path.exists(job.file_path):
         os.remove(job.file_path)

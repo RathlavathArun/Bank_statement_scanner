@@ -8,6 +8,8 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
+import { readApiResponse } from "@/lib/utils";
+
 export default function LoginPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -27,11 +29,15 @@ export default function LoginPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-      const data = await res.json();
+      const data = await readApiResponse(res);
 
       if (res.ok && data.success) {
         localStorage.setItem("access_token", data.data.tokens.access_token);
-        router.push("/dashboard");
+        if (data.data.user?.email_verified === false) {
+          router.push(`/verify-email?email=${encodeURIComponent(email as string)}`);
+        } else {
+          router.push("/dashboard");
+        }
       } else {
         setError(data.detail || data.error || data.message || "Login failed");
       }
@@ -79,7 +85,7 @@ export default function LoginPage() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <Label htmlFor="password" className="text-slate-700 dark:text-slate-300">Password</Label>
-                <Link href="#" className="text-sm font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400">
+                <Link href="/forgot-password" className="text-sm font-medium text-blue-600 hover:text-blue-500 dark:text-blue-400">
                   Forgot password?
                 </Link>
               </div>

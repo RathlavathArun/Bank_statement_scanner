@@ -281,3 +281,35 @@ class BankTemplate(Base):
 
     # Relationships
     uploader = relationship("User")
+
+
+# ─── OTP Codes (email verification & password reset) ────────
+class OtpCode(Base):
+    __tablename__ = "otp_codes"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    email = Column(String(255), nullable=False, index=True)
+    code = Column(String(6), nullable=False)
+    purpose = Column(String(20), nullable=False)  # verify_email | reset_password
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    # Relationships
+    user = relationship("User")
+
+
+# ─── Password Reset Tokens ──────────────────────────────────
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token = Column(String(64), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    # Relationships
+    user = relationship("User")

@@ -2,7 +2,7 @@
 Pydantic schemas for authentication requests and responses.
 """
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Literal, Optional
 from datetime import datetime
 
 
@@ -22,6 +22,27 @@ class LoginRequest(BaseModel):
 
 class RefreshRequest(BaseModel):
     refresh_token: str
+
+
+class VerifyEmailRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(..., min_length=6, max_length=6)
+
+
+class ResendOtpRequest(BaseModel):
+    email: EmailStr
+    purpose: Literal["verify_email", "reset_password"] = "verify_email"
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(..., min_length=6, max_length=6)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
 
 
 # ─── Response Schemas ────────────────────────────────────────

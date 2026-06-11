@@ -6,14 +6,12 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, Query, status
 from fastapi.responses import FileResponse
-from fastapi import HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth.dependencies import get_current_user
-from db.models import User
 from db.database import get_db
-from db.models import Client, Firm, LLMCache, Statement, Transaction
+from db.models import Client, Firm, FirmMember, LLMCache, Statement, Transaction, User
+from auth.dependencies import get_current_user
 from fastapi.concurrency import run_in_threadpool
 import logging
 
@@ -43,7 +41,6 @@ router = APIRouter(prefix="/v1/statements", tags=["statements"])
 UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_FIRM_NAME = "Default Firm"
 DEFAULT_CLIENT_NAME = "Default Client"
 
 # Allowed statement statuses
@@ -51,6 +48,87 @@ ALLOWED_STATUSES = {
     "UPLOADED", "PARSING", "OCR", "READY_FOR_REVIEW", "REVIEWED", "EXPORTED", "FAILED", "PARSE_ERROR"
 }
 
+
+# ─── Data Isolation Helpers ─────────────────────────────────
+
+async def get_user_firm_id(db: AsyncSession, user: User) -> str | None:
+    """Get the firm_id for the current user."""
+    result = await db.execute(
+        select(FirmMember.firm_id).where(FirmMember.user_id == user.id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_user_client_ids(db: AsyncSession, firm_id: str) -> list[str]:
+    """Get all client IDs belonging to the user's firm."""
+    result = await db.execute(
+        select(Client.id).where(Client.firm_id == firm_id)
+    )
+    return list(result.scalars().all())
+
+
+async def verify_statement_access(
+    db: AsyncSession, statement_id: str, user: User
+) -> Statement:
+    """
+    Load statement and verify the current user has access via firm membership.
+    Returns 404 (not 403) to prevent information leakage about statement existence.
+    """
+    stmt = await db.get(Statement, statement_id)
+    if not stmt:
+        raise HTTPException(status_code=404, detail="Statement not found")
+
+    firm_id = await get_user_firm_id(db, user)
+    if firm_id:
+        client = await db.get(Client, stmt.client_id)
+        if not client or client.firm_id != firm_id:
+            raise HTTPException(status_code=404, detail="Statement not found")
+    else:
+        # No firm membership — check uploaded_by directly
+        if stmt.uploaded_by != user.id:
+            raise HTTPException(status_code=404, detail="Statement not found")
+
+    return stmt
+
+
+async def get_or_create_firm_client(db: AsyncSession, user: User) -> Client:
+    """Get or create a default client under the user's firm."""
+    firm_id = await get_user_firm_id(db, user)
+
+    if firm_id:
+        # Look for existing default client in the firm
+        result = await db.execute(
+            select(Client).where(
+                Client.firm_id == firm_id,
+                Client.name == DEFAULT_CLIENT_NAME,
+            )
+        )
+        client = result.scalar_one_or_none()
+        if client:
+            return client
+
+        # Create one
+        client = Client(firm_id=firm_id, name=DEFAULT_CLIENT_NAME)
+        db.add(client)
+        await db.flush()
+        return client
+    else:
+        # User has no firm — create a personal firm for them
+        firm = Firm(name=f"{user.full_name or user.email}'s Firm")
+        db.add(firm)
+        await db.flush()
+
+        membership = FirmMember(firm_id=firm.id, user_id=user.id, role="owner")
+        db.add(membership)
+        await db.flush()
+
+        client = Client(firm_id=firm.id, name=DEFAULT_CLIENT_NAME)
+        db.add(client)
+        await db.flush()
+        return client
+
+
+# ─── Utilities ──────────────────────────────────────────────
 
 def file_type_for(filename: str) -> str:
     suffix = Path(filename).suffix.lower().lstrip(".")
@@ -63,23 +141,6 @@ def file_type_for(filename: str) -> str:
 
 def money(value: Decimal | None) -> str | None:
     return str(value) if value is not None else None
-
-
-async def get_or_create_default_client(db: AsyncSession) -> Client:
-    result = await db.execute(select(Client).where(Client.name == DEFAULT_CLIENT_NAME))
-    client = result.scalar_one_or_none()
-    if client:
-        return client
-
-    firm = Firm(name=DEFAULT_FIRM_NAME)
-    db.add(firm)
-    await db.flush()
-
-    client = Client(firm_id=firm.id, name=DEFAULT_CLIENT_NAME)
-    db.add(client)
-    await db.flush()
-
-    return client
 
 
 def serialize_statement(statement: Statement) -> dict:
@@ -106,6 +167,8 @@ def serialize_transaction(transaction: Transaction) -> dict:
         "balance": money(transaction.balance),
     }
 
+
+# ─── Background Tasks (no user context) ─────────────────────
 
 async def _background_enrich(statement_id: str, transaction_ids: list[str]) -> None:
     """Run heuristic / Claude enrichment for freshly parsed transactions."""
@@ -218,6 +281,8 @@ async def _background_parse_statement(statement_id: str, file_path: Path, bank: 
             await _background_enrich(statement.id, enrich_tx_ids)
 
 
+# ─── Endpoints (all require authentication) ─────────────────
+
 @router.post("/upload")
 async def upload_statement(
     background_tasks: BackgroundTasks,
@@ -228,7 +293,7 @@ async def upload_statement(
     current_user: User = Depends(get_current_user),
 ):
     original_filename = file.filename or "statement"
-    client = await get_or_create_default_client(db)
+    client = await get_or_create_firm_client(db, current_user)
 
     statement = Statement(
         client_id=client.id,
@@ -287,49 +352,14 @@ async def upload_statement(
         "data": serialize_statement(statement),
     }
 
-@router.delete("/{statement_id}")
-async def delete_statement(
-    statement_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    result = await db.execute(
-        select(Statement).where(Statement.id == statement_id)
-    )
-    stmt = result.scalar_one_or_none()
-
-    if not stmt:
-        raise HTTPException(
-            status_code=404,
-            detail="Statement not found"
-        )
-
-    if stmt.uploaded_by != current_user.id:
-        raise HTTPException(
-            status_code=403,
-            detail="Not authorized to delete this statement"
-        )
-
-    await db.delete(stmt)
-    await db.commit()
-
-    return {
-        "success": True,
-        "message": "Statement deleted successfully"
-    }
 
 @router.get("/{statement_id}/status")
 async def get_statement_status(
     statement_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    statement = await db.get(Statement, statement_id)
-
-    if not statement:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Statement not found",
-        )
+    statement = await verify_statement_access(db, statement_id, current_user)
 
     return {
         "success": True,
@@ -342,14 +372,9 @@ async def get_statement_status(
 async def get_statement_result(
     statement_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    statement = await db.get(Statement, statement_id)
-
-    if not statement:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Statement not found",
-        )
+    statement = await verify_statement_access(db, statement_id, current_user)
 
     result = await db.execute(
         select(Transaction)
@@ -382,10 +407,28 @@ async def list_statements(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """List all statements with pagination and filters."""
-    query = select(Statement).where(
-    Statement.uploaded_by == current_user.id
-)
+    """List statements belonging to the current user's firm."""
+    # Firm-level data isolation
+    firm_id = await get_user_firm_id(db, current_user)
+    if not firm_id:
+        # No firm — return empty
+        return {
+            "success": True,
+            "data": PaginatedStatements(
+                items=[], total=0, page=page, size=size, pages=0,
+            ).model_dump()
+        }
+
+    client_ids = await get_user_client_ids(db, firm_id)
+    if not client_ids:
+        return {
+            "success": True,
+            "data": PaginatedStatements(
+                items=[], total=0, page=page, size=size, pages=0,
+            ).model_dump()
+        }
+
+    query = select(Statement).where(Statement.client_id.in_(client_ids))
     
     if status:
         query = query.where(Statement.status == status)
@@ -451,12 +494,11 @@ async def list_transactions(
     date_to: Optional[str] = None,
     search: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """List transactions for a statement with filtering."""
-    # Verify statement exists
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    # Verify ownership
+    await verify_statement_access(db, statement_id, current_user)
     
     query = select(Transaction).where(Transaction.statement_id == statement_id)
     
@@ -507,8 +549,11 @@ async def update_transaction(
     transaction_id: str,
     body: TransactionUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Update a single transaction."""
+    stmt = await verify_statement_access(db, statement_id, current_user)
+
     result = await db.execute(
         select(Transaction).where(
             Transaction.id == transaction_id,
@@ -519,15 +564,13 @@ async def update_transaction(
     
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
-
-    stmt = await db.get(Statement, statement_id)
     
     # Apply updates (only present fields)
     updates = body.model_dump(exclude_unset=True)
     for field, value in updates.items():
         setattr(tx, field, value)
 
-    if stmt and updates.get("confirmed_ledger"):
+    if updates.get("confirmed_ledger"):
         await remember_ledger_mapping(
             db=db,
             transaction=tx,
@@ -550,11 +593,10 @@ async def get_ledger_suggestions(
     transaction_id: str,
     limit: int = Query(5, ge=1, le=20),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Suggest ledgers from learned client mappings and optional Qdrant memory."""
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    stmt = await verify_statement_access(db, statement_id, current_user)
 
     result = await db.execute(
         select(Transaction).where(
@@ -581,11 +623,10 @@ async def enrich_statement_transactions(
     statement_id: str,
     body: EnrichTransactionsRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Enrich transaction narrations with Claude when configured, otherwise local rules."""
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    await verify_statement_access(db, statement_id, current_user)
 
     query = select(Transaction).where(Transaction.statement_id == statement_id)
     if body.transaction_ids:
@@ -638,11 +679,10 @@ async def enrich_statement_transactions(
 async def get_statement_llm_usage(
     statement_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Return LLM cache/cost totals for a statement."""
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    await verify_statement_access(db, statement_id, current_user)
 
     return {
         "success": True,
@@ -658,12 +698,10 @@ async def bulk_update_transactions(
     statement_id: str,
     body: BulkUpdateRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Bulk update multiple transactions in a single transaction."""
-    # Verify statement exists
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    stmt = await verify_statement_access(db, statement_id, current_user)
     
     updated = 0
     failed = []
@@ -709,11 +747,10 @@ async def update_statement_status(
     statement_id: str,
     body: StatementStatusUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Update statement status."""
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    stmt = await verify_statement_access(db, statement_id, current_user)
     
     if body.status not in ALLOWED_STATUSES:
         raise HTTPException(
@@ -741,11 +778,10 @@ async def update_statement_status(
 async def get_statement_file(
     statement_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Download the uploaded statement file."""
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    stmt = await verify_statement_access(db, statement_id, current_user)
     
     file_path = Path(stmt.file_url)
     if not file_path.exists():

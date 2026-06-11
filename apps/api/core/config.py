@@ -39,6 +39,17 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+    # ─── Email / OTP ────────────────────────────
+    EMAIL_PROVIDER: str = "smtp"  # "smtp" | "ses"
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""  # Gmail App Password
+    SMTP_FROM_EMAIL: str = "noreply@bankscanner.app"
+    SMTP_FROM_NAME: str = "Bank Statement Scanner"
+    OTP_EXPIRY_MINUTES: int = 10
+    OTP_MAX_ATTEMPTS_PER_HOUR: int = 5
+
     # ─── App ─────────────────────────────────────
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000
