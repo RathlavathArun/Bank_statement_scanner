@@ -17,10 +17,6 @@ logger = logging.getLogger(__name__)
 
 def generate_otp() -> str:
     """Generate a cryptographically secure 6-digit OTP code."""
-    # If SMTP is not configured, use a universal code so the app can be tested
-    # without having to read ECS container logs.
-    if not settings.SMTP_USERNAME or not settings.SMTP_PASSWORD:
-        return "123456"
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
