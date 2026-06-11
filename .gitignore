@@ -32,4 +32,14 @@ htmlcov/
 .DS_Store
 Thumbs.db
 apps/api/uploads/
+apps/api/exports/
 apps/api/bank_statements.db
+
+.terraform/
+*.tfstate
+*.tfstate.backup
+
+# Local setup and installer files
+.traffic_venv/
+AWSCLIV2.pkg
+catboost_info/

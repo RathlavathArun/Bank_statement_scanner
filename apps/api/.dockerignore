@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.*
+venv/
+.venv/
+uploads/
+bank_statements.db
+.pytest_cache/
+tests/
+*.db
+.git/
+.DS_Store

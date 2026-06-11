@@ -29,7 +29,7 @@ export default function TemplateReloadButton({
       const token =
         localStorage.getItem("access_token") ||
         localStorage.getItem("token");
-      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {};
 
       const endpoint = bankCode
         ? `/api/admin/banks/${bankCode}/reload`

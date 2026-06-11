@@ -6,11 +6,19 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, Query, status
 from fastapi.responses import FileResponse
+from fastapi import HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from auth.dependencies import get_current_user
+from db.models import User
 from db.database import get_db
 from db.models import Client, Firm, LLMCache, Statement, Transaction
+from fastapi.concurrency import run_in_threadpool
+import logging
+
+logger = logging.getLogger(__name__)
+
 from statements.parser import PDFReadError, PasswordProtectedError, StatementParserError, parse_statement
 from statements.ledger_memory import (
     remember_ledger_mapping,
@@ -127,6 +135,89 @@ async def _background_enrich(statement_id: str, transaction_ids: list[str]) -> N
         await session.commit()
 
 
+async def _background_parse_statement(statement_id: str, file_path: Path, bank: str | None, password: str | None) -> None:
+    from db.database import async_session
+    
+    async with async_session() as db:
+        statement = await db.get(Statement, statement_id)
+        if not statement:
+            return
+
+        enrich_tx_ids: list[str] = []
+        try:
+            parsed = await run_in_threadpool(parse_statement, file_path, bank, password=password)
+        except PasswordProtectedError as exc:
+            statement.status = "FAILED"
+            statement.error_message = str(exc)
+            await db.commit()
+            await notify_status_change(statement.id, statement.status)
+            return
+        except PDFReadError as exc:
+            statement.status = "FAILED"
+            statement.error_message = str(exc)
+            await db.commit()
+            await notify_status_change(statement.id, statement.status)
+            return
+        except StatementParserError as exc:
+            statement.status = "READY_FOR_REVIEW" if statement.file_type == "pdf" else "FAILED"
+            statement.error_message = str(exc)
+            statement.metadata_ = {
+                **statement.metadata_,
+                "parser": "pdf_text",
+                "parse_warning": str(exc),
+                "row_count": 0,
+            }
+            await db.commit()
+            await notify_status_change(statement.id, statement.status)
+            return
+        except Exception as exc:
+            logger.exception("Unexpected error parsing statement")
+            statement.status = "FAILED"
+            statement.error_message = f"Unexpected error: {exc}"
+            await db.commit()
+            await notify_status_change(statement.id, statement.status)
+            return
+
+        is_ocr = parsed.metadata.get("parser") == "ocr"
+
+        if is_ocr:
+            statement.status = "OCR"
+            await db.commit()
+            await notify_status_change(statement.id, "OCR")
+
+        statement.metadata_ = {
+            **statement.metadata_,
+            **parsed.metadata,
+        }
+        statement.status = "READY_FOR_REVIEW"
+
+        new_txns: list[Transaction] = []
+        for txn in parsed.transactions:
+            tx_kwargs: dict = dict(
+                statement_id=statement.id,
+                row_number=txn.row_number,
+                txn_date=txn.txn_date,
+                value_date=txn.value_date,
+                narration=txn.narration,
+                reference_no=txn.reference_no,
+                debit=txn.debit,
+                credit=txn.credit,
+                balance=txn.balance,
+            )
+            if is_ocr and txn.ocr_confidence is not None:
+                tx_kwargs["ocr_confidence"] = txn.ocr_confidence
+            new_txns.append(Transaction(**tx_kwargs))
+
+        db.add_all(new_txns)
+        await db.commit()
+        enrich_tx_ids = [tx.id for tx in new_txns]
+
+        await notify_status_change(statement.id, statement.status)
+
+        if enrich_tx_ids:
+            await _background_enrich(statement.id, enrich_tx_ids)
+
+
 @router.post("/upload")
 async def upload_statement(
     background_tasks: BackgroundTasks,
@@ -134,12 +225,14 @@ async def upload_statement(
     bank: str | None = Form(default=None),
     password: str | None = Form(default=None),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     original_filename = file.filename or "statement"
     client = await get_or_create_default_client(db)
 
     statement = Statement(
         client_id=client.id,
+        uploaded_by=current_user.id,
         file_url="",
         file_type=file_type_for(original_filename),
         bank_code=bank,
@@ -160,78 +253,33 @@ async def upload_statement(
     await db.flush()
     await notify_status_change(statement.id, statement.status)
 
-    enrich_tx_ids: list[str] = []
-    try:
-        parsed = parse_statement(file_path, bank, password=password)
-    except PasswordProtectedError as exc:
-        statement.status = "FAILED"
-        statement.error_message = str(exc)
-        await db.flush()
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error_code": "PASSWORD_REQUIRED" if not password else "INVALID_PASSWORD",
-                "message": str(exc),
-                "statement_id": statement.id,
-            },
-        )
-    except PDFReadError as exc:
-        statement.status = "FAILED"
-        statement.error_message = str(exc)
-        await db.flush()
-    except StatementParserError as exc:
-        statement.status = "READY_FOR_REVIEW" if statement.file_type == "pdf" else "FAILED"
-        statement.error_message = str(exc)
-        statement.metadata_ = {
-            **statement.metadata_,
-            "parser": "pdf_text",
-            "parse_warning": str(exc),
-            "row_count": 0,
-        }
-        await db.flush()
-    else:
-        is_ocr = parsed.metadata.get("parser") == "ocr"
-
-        # Notify watchers that OCR is in progress (the sync call already ran,
-        # but this keeps the status timeline accurate for the frontend).
-        if is_ocr:
-            statement.status = "OCR"
+    # Quick synchronous check for password protection before backgrounding
+    if statement.file_type == "pdf":
+        import pdfplumber
+        from pdfminer.pdfdocument import PDFPasswordIncorrect
+        try:
+            with pdfplumber.open(str(file_path), password=password) as pdf:
+                pass
+        except PDFPasswordIncorrect:
+            statement.status = "FAILED"
+            exc_msg = "Incorrect password. Please provide the correct PDF password." if password else "This PDF is password-protected. Please re-upload with the document password."
+            statement.error_message = exc_msg
             await db.flush()
-            await notify_status_change(statement.id, "OCR")
-
-        statement.metadata_ = {
-            **statement.metadata_,
-            **parsed.metadata,
-        }
-        statement.status = "READY_FOR_REVIEW"
-
-        # Build Transaction rows; include OCR-specific columns when available.
-        new_txns: list[Transaction] = []
-        for txn in parsed.transactions:
-            tx_kwargs: dict = dict(
-                statement_id=statement.id,
-                row_number=txn.row_number,
-                txn_date=txn.txn_date,
-                value_date=txn.value_date,
-                narration=txn.narration,
-                reference_no=txn.reference_no,
-                debit=txn.debit,
-                credit=txn.credit,
-                balance=txn.balance,
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error_code": "INVALID_PASSWORD" if password else "PASSWORD_REQUIRED",
+                    "message": exc_msg,
+                    "statement_id": statement.id,
+                },
             )
-            if is_ocr and txn.ocr_confidence is not None:
-                tx_kwargs["ocr_confidence"] = txn.ocr_confidence
-            new_txns.append(Transaction(**tx_kwargs))
+        except Exception:
+            pass  # let the background task handle other PDFReadErrors
 
-        db.add_all(new_txns)
-        await db.flush()
-        enrich_tx_ids = [tx.id for tx in new_txns]
+    await db.commit()
 
-    await notify_status_change(statement.id, statement.status)
-
-    if enrich_tx_ids:
-        background_tasks.add_task(_background_enrich, statement.id, enrich_tx_ids)
+    background_tasks.add_task(_background_parse_statement, statement.id, file_path, bank, password)
 
     return {
         "success": True,
@@ -239,6 +287,36 @@ async def upload_statement(
         "data": serialize_statement(statement),
     }
 
+@router.delete("/{statement_id}")
+async def delete_statement(
+    statement_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(Statement).where(Statement.id == statement_id)
+    )
+    stmt = result.scalar_one_or_none()
+
+    if not stmt:
+        raise HTTPException(
+            status_code=404,
+            detail="Statement not found"
+        )
+
+    if stmt.uploaded_by != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized to delete this statement"
+        )
+
+    await db.delete(stmt)
+    await db.commit()
+
+    return {
+        "success": True,
+        "message": "Statement deleted successfully"
+    }
 
 @router.get("/{statement_id}/status")
 async def get_statement_status(
@@ -302,9 +380,12 @@ async def list_statements(
     bank_id: Optional[str] = None,
     bank_code: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """List all statements with pagination and filters."""
-    query = select(Statement)
+    query = select(Statement).where(
+    Statement.uploaded_by == current_user.id
+)
     
     if status:
         query = query.where(Statement.status == status)

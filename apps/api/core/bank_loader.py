@@ -13,7 +13,10 @@ from pydantic import BaseModel, ValidationError
 logger = logging.getLogger(__name__)
 
 # Path to bank templates directory
-BANK_TEMPLATES_DIR = Path(__file__).parent.parent.parent.parent / "packages" / "bank-templates"
+if Path("/app/bank-templates").exists():
+    BANK_TEMPLATES_DIR = Path("/app/bank-templates")
+else:
+    BANK_TEMPLATES_DIR = Path(__file__).parent.parent.parent.parent / "packages" / "bank-templates"
 
 
 class BankTemplateSchema(BaseModel):
