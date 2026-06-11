@@ -37,11 +37,20 @@ async def get_db():
 
 
 async def init_db():
-    """Create all tables (used for development with SQLite)."""
+    """Create all tables and run lightweight schema updates."""
+    from sqlalchemy import text
     async with engine.begin() as conn:
         from db.models import (  # noqa: F401
             Firm, User, FirmMember, Client,
             Statement, Transaction, LedgerMapping, Ledger, AuditLog,
-            LLMCache, LLMUsage, ExportJob,
+            LLMCache, LLMUsage, ExportJob, OtpCode, PasswordResetToken
         )
         await conn.run_sync(Base.metadata.create_all)
+        
+        # Lightweight migration to add email_verified if it doesn't exist
+        try:
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;"))
+        except Exception as e:
+            # SQLite might not support IF NOT EXISTS for columns in older versions, but Postgres does.
+            # We catch it just in case.
+            pass
