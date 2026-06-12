@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const API = "/api";
 
@@ -54,6 +54,8 @@ export default function ExportModal({
   onExportComplete,
 }: Props) {
   const [format, setFormat] = useState<ExportFormat>("tally_xml");
+  // Track the format of the last completed export separately from the selected format
+  const lastExportedFormat = useRef<ExportFormat | null>(null);
   const [companyName, setCompanyName] = useState("");
   const [bankLedgerName, setBankLedgerName] = useState("");
   const [loading, setLoading] = useState(false);
@@ -124,6 +126,7 @@ export default function ExportModal({
       }
 
       setExportJob(payload);
+      lastExportedFormat.current = format;
       setPastExports((current) => [payload, ...current.filter((item) => item.export_id !== payload.export_id)]);
       onExportComplete(payload);
     } catch (err) {
@@ -162,7 +165,15 @@ export default function ExportModal({
               .map(([key, info]) => (
                 <button
                   key={key}
-                  onClick={() => setFormat(key)}
+                  onClick={() => {
+                    setFormat(key);
+                    // If the user picks a different format from the last exported one,
+                    // clear the completed job so the Export button reappears.
+                    if (lastExportedFormat.current !== key) {
+                      setExportJob(null);
+                      setError(null);
+                    }
+                  }}
                   className={`rounded-2xl border p-4 text-left transition ${
                     format === key
                       ? "border-cyan-400 bg-cyan-400/10"
@@ -213,13 +224,28 @@ export default function ExportModal({
               <p className="mt-1 text-sm text-emerald-100/80">
                 {exportJob.idempotent ? "Reused an existing export." : "Created a fresh export file."}
               </p>
-              <a
-                href={downloadUrl(exportJob.download_url)}
-                download={exportJob.filename}
-                className="mt-4 inline-flex rounded-xl bg-emerald-500 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-400"
-              >
-                Download {FORMAT_INFO[exportJob.format].label}
-              </a>
+              <div className="mt-4 flex flex-wrap gap-3">
+                {/* The download_url already contains a short-lived signed token from the API.
+                    Using a plain browser anchor is the most reliable download method —
+                    no fetch/Blob needed, no auth header required. */}
+                <a
+                  href={downloadUrl(exportJob.download_url)}
+                  download={exportJob.filename}
+                  className="inline-flex rounded-xl bg-emerald-500 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-400"
+                >
+                  Download {FORMAT_INFO[exportJob.format].label}
+                </a>
+                <button
+                  onClick={() => {
+                    setExportJob(null);
+                    lastExportedFormat.current = null;
+                    setError(null);
+                  }}
+                  className="inline-flex rounded-xl border border-white/20 px-4 py-2 text-sm font-medium text-slate-300 transition hover:border-white/40 hover:text-white"
+                >
+                  Export another format
+                </button>
+              </div>
             </div>
           ) : (
             <button
@@ -255,7 +281,7 @@ export default function ExportModal({
                       {job.download_url ? (
                         <a
                           href={downloadUrl(job.download_url)}
-                          download={job.filename}
+                          download={job.filename ?? `export_${job.export_id.slice(0, 8)}.${job.format}`}
                           className="text-sm font-medium text-cyan-300 transition hover:text-cyan-200"
                         >
                           Download
