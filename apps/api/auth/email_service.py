@@ -164,6 +164,7 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "verify_em
     # (not AWS_DEFAULT_REGION, which can be set locally too).
     running_on_aws = bool(
         os.environ.get("ECS_CONTAINER_METADATA_URI")
+        or os.environ.get("ECS_CONTAINER_METADATA_URI_V4")
         or os.environ.get("AWS_EXECUTION_ENV")
     )
     if running_on_aws:
