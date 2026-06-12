@@ -160,7 +160,7 @@ test("downloads exports with a signed URL", async ({ page }) => {
         statement_id: statementId,
         format: "csv",
         status: "READY",
-        download_url: "/v1/exports/export-1/download",
+        download_url: "/v1/exports/export-1/download?download_token=signed-e2e-token",
         filename: "hdfc_2026-06-12_csv.csv",
         created_at: "2026-06-12T00:00:00",
         idempotent: false,
@@ -168,8 +168,8 @@ test("downloads exports with a signed URL", async ({ page }) => {
     });
   });
 
-  await page.route("**/api/v1/exports/export-1/download", async (route) => {
-    expect(route.request().headers().authorization).toBe("Bearer e2e-token");
+  await page.route("**/api/v1/exports/export-1/download?download_token=signed-e2e-token", async (route) => {
+    expect(route.request().url()).toContain("download_token=signed-e2e-token");
     await route.fulfill({
       contentType: "text/csv",
       headers: {
@@ -185,7 +185,7 @@ test("downloads exports with a signed URL", async ({ page }) => {
   await page.getByRole("button", { name: "Export CSV" }).click();
 
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Download CSV" }).click();
+  await page.getByRole("link", { name: "Download CSV" }).click();
   const download = await downloadPromise;
 
   expect(download.suggestedFilename()).toBe("hdfc_2026-06-12_csv.csv");

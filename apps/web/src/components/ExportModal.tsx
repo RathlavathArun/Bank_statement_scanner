@@ -45,14 +45,6 @@ function downloadUrl(path: string): string {
   return path.startsWith("http") ? path : `${API}${path}`;
 }
 
-function filenameFromDisposition(value: string | null): string | null {
-  if (!value) return null;
-  const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/i);
-  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1].replace(/"/g, ""));
-  const filenameMatch = value.match(/filename="?([^";]+)"?/i);
-  return filenameMatch?.[1] ?? null;
-}
-
 export default function ExportModal({
   statementId,
   statementFilename,
@@ -69,7 +61,6 @@ export default function ExportModal({
   const [exportJob, setExportJob] = useState<ExportJob | null>(null);
   const [pastExports, setPastExports] = useState<ExportJob[]>([]);
   const [showPast, setShowPast] = useState(false);
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const defaultCompanyName = bankId ? `${bankId} Company` : "";
   const defaultBankLedgerName = `${bankId || "Bank"} Account`;
 
@@ -141,35 +132,6 @@ export default function ExportModal({
       setLoading(false);
     }
   }, [bankLedgerName, companyName, defaultBankLedgerName, defaultCompanyName, format, onExportComplete, statementId]);
-
-  const handleDownload = useCallback(async (job: ExportJob) => {
-    setDownloadingId(job.export_id);
-    setError(null);
-    try {
-      const res = await fetch(downloadUrl(job.download_url), {
-        headers: authHeaders(),
-      });
-
-      if (!res.ok) {
-        const payload = await res.json().catch(() => ({}));
-        throw new Error(payload.detail || "Download failed");
-      }
-
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      link.download = filenameFromDisposition(res.headers.get("content-disposition")) || job.filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(objectUrl);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Download failed");
-    } finally {
-      setDownloadingId(null);
-    }
-  }, []);
 
   if (!isOpen) return null;
 
@@ -251,14 +213,13 @@ export default function ExportModal({
               <p className="mt-1 text-sm text-emerald-100/80">
                 {exportJob.idempotent ? "Reused an existing export." : "Created a fresh export file."}
               </p>
-              <button
-                type="button"
-                onClick={() => handleDownload(exportJob)}
-                disabled={downloadingId === exportJob.export_id}
+              <a
+                href={downloadUrl(exportJob.download_url)}
+                download={exportJob.filename}
                 className="mt-4 inline-flex rounded-xl bg-emerald-500 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-400"
               >
-                {downloadingId === exportJob.export_id ? "Downloading..." : `Download ${FORMAT_INFO[exportJob.format].label}`}
-              </button>
+                Download {FORMAT_INFO[exportJob.format].label}
+              </a>
             </div>
           ) : (
             <button
@@ -292,14 +253,13 @@ export default function ExportModal({
                         </p>
                       </div>
                       {job.download_url ? (
-                        <button
-                          type="button"
-                          onClick={() => handleDownload(job)}
-                          disabled={downloadingId === job.export_id}
+                        <a
+                          href={downloadUrl(job.download_url)}
+                          download={job.filename}
                           className="text-sm font-medium text-cyan-300 transition hover:text-cyan-200"
                         >
-                          {downloadingId === job.export_id ? "Downloading..." : "Download"}
-                        </button>
+                          Download
+                        </a>
                       ) : (
                         <span className="text-xs text-slate-500">{job.status}</span>
                       )}
