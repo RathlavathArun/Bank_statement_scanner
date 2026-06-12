@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────
-# Bank Statement Scanner — aws.exe Deployment Script
-# Orchestrates: Terraform → docker.exe Build → ECR Push → ECS Deploy
+# Bank Statement Scanner — Deployment Script
+# Orchestrates: Terraform → Docker Build → ECR Push → ECS Deploy
 # ──────────────────────────────────────────────────────────────
 set -eu
 
@@ -24,16 +24,22 @@ TF_DIR="$SCRIPT_DIR/terraform"
 
 # ── Pre-flight Checks ───────────────────────────────────────
 log "Pre-flight checks..."
-ok "Skipping tool checks"
-ok "All required tools found (aws, terraform, docker)"
 
-# Verify aws.exe credentials
-if ! aws.exe sts get-caller-identity &>/dev/null; then
-    err "aws.exe credentials not configured. Run 'aws.exe configure' first."
+for tool in aws terraform docker python3; do
+    if ! command -v "$tool" &>/dev/null; then
+        err "Required tool not found: $tool. Please install it first."
+        exit 1
+    fi
+done
+ok "All required tools found (aws, terraform, docker, python3)"
+
+# Verify AWS credentials
+if ! aws sts get-caller-identity &>/dev/null; then
+    err "AWS credentials not configured. Run 'aws configure' first."
     exit 1
 fi
-AWS_ACCOUNT_ID=$(aws.exe sts get-caller-identity --query Account --output text | tr -d '\r')
-ok "aws.exe Account: $AWS_ACCOUNT_ID"
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+ok "AWS Account: $AWS_ACCOUNT_ID"
 
 # ═════════════════════════════════════════════════════════════
 # STEP 1: Terraform — Provision Infrastructure (SKIPPED)
@@ -55,8 +61,8 @@ ok "Infrastructure provisioned successfully"
 # ═════════════════════════════════════════════════════════════
 log "━━━ Step 2/6: Capturing Outputs ━━━"
 
-AWS_REGION="us-east-1"
-ALB_DNS=$(aws.exe elbv2 describe-load-balancers --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null | tr -d '\r' || echo "unknown")
+AWS_REGION="ap-south-1"
+ALB_DNS=$(aws elbv2 describe-load-balancers --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "unknown")
 ECR_WEB_URL="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/bank-statement-web"
 ECR_API_URL="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/bank-statement-api"
 RDS_ENDPOINT="existing"
@@ -71,17 +77,17 @@ ok "RDS Endpoint:     $RDS_ENDPOINT"
 ok "Redis Endpoint:   $REDIS_ENDPOINT"
 ok "S3 Bucket:        $S3_BUCKET"
 ok "API Discovery:    $API_DISCOVERY_DNS"
-ok "aws.exe Region:       $AWS_REGION"
+ok "AWS Region:       $AWS_REGION"
 
 cd "$REPO_ROOT"
 
 # ═════════════════════════════════════════════════════════════
-# STEP 3: docker.exe Login to ECR
+# STEP 3: Docker Login to ECR
 # ═════════════════════════════════════════════════════════════
-log "━━━ Step 3/6: ECR docker.exe Login ━━━"
+log "━━━ Step 3/6: ECR Docker Login ━━━"
 
-aws.exe ecr get-login-password --region "$AWS_REGION" | tr -d '\r' \
-    | docker.exe login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+aws ecr get-login-password --region "$AWS_REGION" \
+    | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
 
 ok "Logged in to ECR"
 
@@ -95,8 +101,7 @@ API_IMAGE="$ECR_API_URL:$IMAGE_TAG"
 API_IMAGE_LATEST="$ECR_API_URL:latest"
 
 log "Building API image (tag: $IMAGE_TAG)..."
-# Build from repo root so Dockerfile can COPY packages/bank-templates
-docker.exe build \
+docker build \
     --no-cache \
     -f apps/api/Dockerfile \
     -t "$API_IMAGE" \
@@ -104,8 +109,8 @@ docker.exe build \
     .
 
 log "Pushing API image to ECR..."
-docker.exe push "$API_IMAGE"
-docker.exe push "$API_IMAGE_LATEST"
+docker push "$API_IMAGE"
+docker push "$API_IMAGE_LATEST"
 
 ok "API image pushed: $API_IMAGE"
 
@@ -121,7 +126,7 @@ WEB_IMAGE_LATEST="$ECR_WEB_URL:latest"
 API_INTERNAL_URL="http://${API_DISCOVERY_DNS}:8000"
 
 log "Building Web image (API_URL=$API_INTERNAL_URL)..."
-docker.exe build \
+docker build \
     --no-cache \
     -f apps/web/Dockerfile \
     --build-arg "API_URL=$API_INTERNAL_URL" \
@@ -130,8 +135,8 @@ docker.exe build \
     apps/web/
 
 log "Pushing Web image to ECR..."
-docker.exe push "$WEB_IMAGE"
-docker.exe push "$WEB_IMAGE_LATEST"
+docker push "$WEB_IMAGE"
+docker push "$WEB_IMAGE_LATEST"
 
 ok "Web image pushed: $WEB_IMAGE"
 
@@ -146,14 +151,14 @@ WEB_SERVICE="bank-statement-web-service"
 
 # Update API task definition with new image
 log "Registering new API task definition..."
-API_TASK_DEF=$(aws.exe ecs describe-task-definition \
+API_TASK_DEF=$(aws ecs describe-task-definition \
     --task-definition bank-statement-api \
     --region "$AWS_REGION" \
     --query 'taskDefinition' \
     --output json)
 
 # Replace the placeholder/old image with the new one and update CORS
-NEW_API_TASK_DEF=$(echo "$API_TASK_DEF" | python.exe -c "
+NEW_API_TASK_DEF=$(echo "$API_TASK_DEF" | python3 -c "
 import sys, json
 td = json.load(sys.stdin)
 td['containerDefinitions'][0]['image'] = '$API_IMAGE'
@@ -171,22 +176,22 @@ result = {k: td[k] for k in keep if k in td}
 print(json.dumps(result))
 ")
 
-API_NEW_TASK_ARN=$(aws.exe ecs register-task-definition \
+API_NEW_TASK_ARN=$(aws ecs register-task-definition \
     --region "$AWS_REGION" \
     --cli-input-json "$NEW_API_TASK_DEF" \
-    --output text --query 'taskDefinition.taskDefinitionArn' | tr -d '\r')
+    --output text --query 'taskDefinition.taskDefinitionArn')
 
 ok "New API task definition registered: $API_NEW_TASK_ARN"
 
 # Update Web task definition with new image AND environment variables
 log "Registering new Web task definition..."
-WEB_TASK_DEF=$(aws.exe ecs describe-task-definition \
+WEB_TASK_DEF=$(aws ecs describe-task-definition \
     --task-definition bank-statement-web \
     --region "$AWS_REGION" \
     --query 'taskDefinition' \
     --output json)
 
-NEW_WEB_TASK_DEF=$(echo "$WEB_TASK_DEF" | python.exe -c "
+NEW_WEB_TASK_DEF=$(echo "$WEB_TASK_DEF" | python3 -c "
 import sys, json
 td = json.load(sys.stdin)
 td['containerDefinitions'][0]['image'] = '$WEB_IMAGE'
@@ -207,16 +212,16 @@ result = {k: td[k] for k in keep if k in td}
 print(json.dumps(result))
 ")
 
-WEB_NEW_TASK_ARN=$(aws.exe ecs register-task-definition \
+WEB_NEW_TASK_ARN=$(aws ecs register-task-definition \
     --region "$AWS_REGION" \
     --cli-input-json "$NEW_WEB_TASK_DEF" \
-    --output text --query 'taskDefinition.taskDefinitionArn' | tr -d '\r')
+    --output text --query 'taskDefinition.taskDefinitionArn')
 
 ok "New Web task definition registered: $WEB_NEW_TASK_ARN"
 
 # Force new deployments with the new task definitions
 log "Forcing new deployment for API service..."
-aws.exe ecs update-service \
+aws ecs update-service \
     --cluster "$ECS_CLUSTER" \
     --service "$API_SERVICE" \
     --task-definition "$API_NEW_TASK_ARN" \
@@ -225,7 +230,7 @@ aws.exe ecs update-service \
     --output text --query 'service.serviceName'
 
 log "Forcing new deployment for Web service..."
-aws.exe ecs update-service \
+aws ecs update-service \
     --cluster "$ECS_CLUSTER" \
     --service "$WEB_SERVICE" \
     --task-definition "$WEB_NEW_TASK_ARN" \
@@ -240,10 +245,10 @@ ok "ECS deployments triggered"
 # ═════════════════════════════════════════════════════════════
 log "Waiting for ECS services to stabilize (this may take 3-5 minutes)..."
 
-aws.exe ecs wait services-stable \
+aws ecs wait services-stable \
     --cluster "$ECS_CLUSTER" \
     --services "$API_SERVICE" "$WEB_SERVICE" \
-    --region "$AWS_REGION" 2>/dev/null || warn "Timeout waiting for services — check aws.exe Console"
+    --region "$AWS_REGION" 2>/dev/null || warn "Timeout waiting for services — check AWS Console"
 
 ok "ECS services are stable"
 
