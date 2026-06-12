@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     SMTP_PORT: int = 587
     SMTP_USERNAME: str = ""
     SMTP_PASSWORD: str = ""  # Gmail App Password
-    SMTP_FROM_EMAIL: str = "noreply@bankscanner.app"
+    SMTP_FROM_EMAIL: str = ""  # Set via env var — must match a verified SES identity in production
     SMTP_FROM_NAME: str = "Bank Statement Scanner"
     OTP_EXPIRY_MINUTES: int = 10
     OTP_MAX_ATTEMPTS_PER_HOUR: int = 5

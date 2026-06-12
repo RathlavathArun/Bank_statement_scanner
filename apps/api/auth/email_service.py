@@ -72,9 +72,13 @@ async def _send_via_ses(to_email: str, subject: str, plain_text: str, html_body:
         import boto3
         from botocore.exceptions import ClientError
 
+        # Use SMTP_FROM_EMAIL if set, otherwise fall back to SMTP_USERNAME
+        # Both should be the verified SES sender identity (gouthamnaroju@gmail.com)
+        from_email = settings.SMTP_FROM_EMAIL or settings.SMTP_USERNAME
+
         client = boto3.client("ses", region_name=os.environ.get("AWS_DEFAULT_REGION", "ap-south-1"))
         client.send_email(
-            Source=f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>",
+            Source=f"{settings.SMTP_FROM_NAME} <{from_email}>",
             Destination={"ToAddresses": [to_email]},
             Message={
                 "Subject": {"Data": subject, "Charset": "UTF-8"},
@@ -156,11 +160,11 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "verify_em
 
     # ── Production: prefer AWS SES ──────────────────────────────
     # AWS blocks outbound Gmail SMTP from ECS/EC2 IPs.
-    # Detect we're running on AWS by checking for ECS-injected env vars.
+    # Detect we're running on AWS by checking for ECS-specific env vars only
+    # (not AWS_DEFAULT_REGION, which can be set locally too).
     running_on_aws = bool(
         os.environ.get("ECS_CONTAINER_METADATA_URI")
         or os.environ.get("AWS_EXECUTION_ENV")
-        or os.environ.get("AWS_DEFAULT_REGION")
     )
     if running_on_aws:
         logger.info("Running on AWS — using SES for email delivery")
