@@ -109,6 +109,13 @@ test.beforeEach(async ({ page }) => {
       body: JSON.stringify({ success: true, data: { id: "tx-1", narration: "Updated vendor payment" } }),
     });
   });
+
+  await page.route(`**/api/v1/statements/${statementId}/exports`, async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify([]),
+    });
+  });
 });
 
 test("opens review UI and edits a transaction", async ({ page }) => {
@@ -125,4 +132,45 @@ test("opens review UI and edits a transaction", async ({ page }) => {
   await expect(page.getByText("Saved")).toBeVisible();
   await page.getByRole("button", { name: "Mark Reviewed" }).click();
   await expect(page.getByText("REVIEWED")).toBeVisible();
+});
+
+test("downloads exports with the auth token", async ({ page }) => {
+  await page.route(`**/api/v1/statements/${statementId}/export`, async (route) => {
+    expect(route.request().headers().authorization).toBe("Bearer e2e-token");
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        export_id: "export-1",
+        statement_id: statementId,
+        format: "csv",
+        status: "READY",
+        download_url: "/v1/exports/export-1/download",
+        filename: "hdfc_2026-06-12_csv.csv",
+        created_at: "2026-06-12T00:00:00",
+        idempotent: false,
+      }),
+    });
+  });
+
+  await page.route("**/api/v1/exports/export-1/download", async (route) => {
+    expect(route.request().headers().authorization).toBe("Bearer e2e-token");
+    await route.fulfill({
+      contentType: "text/csv",
+      headers: {
+        "content-disposition": 'attachment; filename="hdfc_2026-06-12_csv.csv"',
+      },
+      body: "date,narration,amount\n2026-05-01,UPI Payment,1200\n",
+    });
+  });
+
+  await page.goto(`/dashboard/review/${statementId}`);
+  await page.getByRole("button", { name: "Export" }).click();
+  await page.getByRole("button", { name: "CSV" }).click();
+  await page.getByRole("button", { name: "Export CSV" }).click();
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download CSV" }).click();
+  const download = await downloadPromise;
+
+  expect(download.suggestedFilename()).toBe("hdfc_2026-06-12_csv.csv");
 });

@@ -41,6 +41,18 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+function downloadUrl(path: string): string {
+  return path.startsWith("http") ? path : `${API}${path}`;
+}
+
+function filenameFromDisposition(value: string | null): string | null {
+  if (!value) return null;
+  const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1].replace(/"/g, ""));
+  const filenameMatch = value.match(/filename="?([^";]+)"?/i);
+  return filenameMatch?.[1] ?? null;
+}
+
 export default function ExportModal({
   statementId,
   statementFilename,
@@ -57,14 +69,12 @@ export default function ExportModal({
   const [exportJob, setExportJob] = useState<ExportJob | null>(null);
   const [pastExports, setPastExports] = useState<ExportJob[]>([]);
   const [showPast, setShowPast] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const defaultCompanyName = bankId ? `${bankId} Company` : "";
+  const defaultBankLedgerName = `${bankId || "Bank"} Account`;
 
   useEffect(() => {
     if (!isOpen) return;
-    setError(null);
-    setExportJob(null);
-    setShowPast(false);
-    setCompanyName((current) => current || (bankId ? `${bankId} Company` : ""));
-    setBankLedgerName((current) => current || `${bankId || "Bank"} Account`);
 
     const loadExports = async () => {
       try {
@@ -80,7 +90,7 @@ export default function ExportModal({
     };
 
     void loadExports();
-  }, [bankId, isOpen, statementId]);
+  }, [isOpen, statementId]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -92,7 +102,10 @@ export default function ExportModal({
   }, [isOpen, onClose]);
 
   const handleExport = useCallback(async () => {
-    if (format === "tally_xml" && (!companyName.trim() || !bankLedgerName.trim())) {
+    const exportCompanyName = companyName || defaultCompanyName;
+    const exportBankLedgerName = bankLedgerName || defaultBankLedgerName;
+
+    if (format === "tally_xml" && (!exportCompanyName.trim() || !exportBankLedgerName.trim())) {
       setError("Company name and bank ledger name are required for Tally XML export.");
       return;
     }
@@ -108,8 +121,8 @@ export default function ExportModal({
         },
         body: JSON.stringify({
           format,
-          company_name: companyName || "My Company",
-          bank_ledger_name: bankLedgerName || "Bank Account",
+          company_name: exportCompanyName || "My Company",
+          bank_ledger_name: exportBankLedgerName || "Bank Account",
           strict_reviewed_only: false,
         }),
       });
@@ -127,7 +140,36 @@ export default function ExportModal({
     } finally {
       setLoading(false);
     }
-  }, [bankLedgerName, companyName, format, onExportComplete, statementId]);
+  }, [bankLedgerName, companyName, defaultBankLedgerName, defaultCompanyName, format, onExportComplete, statementId]);
+
+  const handleDownload = useCallback(async (job: ExportJob) => {
+    setDownloadingId(job.export_id);
+    setError(null);
+    try {
+      const res = await fetch(downloadUrl(job.download_url), {
+        headers: authHeaders(),
+      });
+
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload.detail || "Download failed");
+      }
+
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filenameFromDisposition(res.headers.get("content-disposition")) || job.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Download failed");
+    } finally {
+      setDownloadingId(null);
+    }
+  }, []);
 
   if (!isOpen) return null;
 
@@ -176,7 +218,7 @@ export default function ExportModal({
               <div>
                 <label className="mb-1 block text-sm text-slate-300">Company Name</label>
                 <input
-                  value={companyName}
+                  value={companyName || defaultCompanyName}
                   onChange={(event) => setCompanyName(event.target.value)}
                   placeholder="My Company Pvt Ltd"
                   className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white outline-none transition focus:border-cyan-400"
@@ -185,7 +227,7 @@ export default function ExportModal({
               <div>
                 <label className="mb-1 block text-sm text-slate-300">Bank Ledger Name</label>
                 <input
-                  value={bankLedgerName}
+                  value={bankLedgerName || defaultBankLedgerName}
                   onChange={(event) => setBankLedgerName(event.target.value)}
                   placeholder="HDFC Bank A/c"
                   className="w-full rounded-xl border border-white/10 bg-slate-900 px-3 py-2 text-sm text-white outline-none transition focus:border-cyan-400"
@@ -209,14 +251,14 @@ export default function ExportModal({
               <p className="mt-1 text-sm text-emerald-100/80">
                 {exportJob.idempotent ? "Reused an existing export." : "Created a fresh export file."}
               </p>
-              <a
-                href={`${API}${exportJob.download_url}`}
-                target="_blank"
-                rel="noopener noreferrer"
+              <button
+                type="button"
+                onClick={() => handleDownload(exportJob)}
+                disabled={downloadingId === exportJob.export_id}
                 className="mt-4 inline-flex rounded-xl bg-emerald-500 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-400"
               >
-                Download {FORMAT_INFO[exportJob.format].label}
-              </a>
+                {downloadingId === exportJob.export_id ? "Downloading..." : `Download ${FORMAT_INFO[exportJob.format].label}`}
+              </button>
             </div>
           ) : (
             <button
@@ -250,14 +292,14 @@ export default function ExportModal({
                         </p>
                       </div>
                       {job.download_url ? (
-                        <a
-                          href={`${API}${job.download_url}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <button
+                          type="button"
+                          onClick={() => handleDownload(job)}
+                          disabled={downloadingId === job.export_id}
                           className="text-sm font-medium text-cyan-300 transition hover:text-cyan-200"
                         >
-                          Download
-                        </a>
+                          {downloadingId === job.export_id ? "Downloading..." : "Download"}
+                        </button>
                       ) : (
                         <span className="text-xs text-slate-500">{job.status}</span>
                       )}
