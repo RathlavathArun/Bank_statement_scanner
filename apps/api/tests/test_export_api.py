@@ -4,20 +4,54 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from httpx import ASGITransport
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Client, ExportJob, Firm, Statement, Transaction
+from auth.dependencies import get_current_user
+from db.database import get_db
+from db.models import Client, ExportJob, Firm, FirmMember, Statement, Transaction, User
+from main import app
 
 
 @pytest_asyncio.fixture
-async def exportable_statement(db: AsyncSession):
+async def export_user(db: AsyncSession):
+    user = User(
+        email="exporter@example.com",
+        password_hash="not-used",
+        full_name="Export User",
+        email_verified=True,
+    )
     firm = Firm(name="Export Firm")
-    db.add(firm)
+    db.add_all([user, firm])
     await db.flush()
+    db.add(FirmMember(firm_id=firm.id, user_id=user.id, role="owner"))
+    await db.commit()
+    return user
 
-    client = Client(firm_id=firm.id, name="Export Client")
+
+@pytest_asyncio.fixture
+async def client(db: AsyncSession, export_user: User):
+    async def override_get_db():
+        yield db
+
+    async def override_current_user():
+        return export_user
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = override_current_user
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def exportable_statement(db: AsyncSession, export_user: User):
+    firm_id = (await db.execute(select(FirmMember.firm_id).where(FirmMember.user_id == export_user.id))).scalar_one()
+
+    client = Client(firm_id=firm_id, name="Export Client")
     db.add(client)
     await db.flush()
 
@@ -28,6 +62,7 @@ async def exportable_statement(db: AsyncSession):
         bank_code="hdfc",
         status="READY_FOR_REVIEW",
         metadata_={"original_filename": "exportable.csv"},
+        uploaded_by=export_user.id,
     )
     db.add(statement)
     await db.flush()
@@ -75,7 +110,8 @@ async def test_create_csv_export_updates_statement_and_returns_download(client: 
     payload = response.json()
     assert payload["format"] == "csv"
     assert payload["status"] == "READY"
-    assert payload["download_url"].endswith("/download")
+    assert f"/v1/exports/{payload['export_id']}/download" in payload["download_url"]
+    assert "download_token=" in payload["download_url"]
     assert payload["transaction_count"] == 2
     assert payload["idempotent"] is False
 
@@ -105,11 +141,9 @@ async def test_export_is_idempotent_for_unexpired_ready_job(client: AsyncClient,
 
 
 @pytest.mark.asyncio
-async def test_export_requires_statement_ready_state(client: AsyncClient, db: AsyncSession):
-    firm = Firm(name="Blocked Firm")
-    db.add(firm)
-    await db.flush()
-    client_record = Client(firm_id=firm.id, name="Blocked Client")
+async def test_export_requires_statement_ready_state(client: AsyncClient, db: AsyncSession, export_user: User):
+    firm_id = (await db.execute(select(FirmMember.firm_id).where(FirmMember.user_id == export_user.id))).scalar_one()
+    client_record = Client(firm_id=firm_id, name="Blocked Client")
     db.add(client_record)
     await db.flush()
     statement = Statement(
@@ -118,6 +152,7 @@ async def test_export_requires_statement_ready_state(client: AsyncClient, db: As
         file_type="csv",
         bank_code="hdfc",
         status="PARSING",
+        uploaded_by=export_user.id,
     )
     db.add(statement)
     await db.commit()
@@ -140,7 +175,7 @@ async def test_list_download_and_delete_export(client: AsyncClient, db: AsyncSes
     assert list_response.status_code == 200
     assert list_response.json()[0]["export_id"] == export_id
 
-    download_response = await client.get(f"/v1/exports/{export_id}/download")
+    download_response = await client.get(created.json()["download_url"])
     assert download_response.status_code == 200
     assert download_response.headers["content-type"].startswith("application/xml")
     assert "attachment;" in download_response.headers["content-disposition"]
@@ -150,6 +185,35 @@ async def test_list_download_and_delete_export(client: AsyncClient, db: AsyncSes
     assert delete_response.status_code == 204
     assert not file_path.exists()
     assert await db.get(ExportJob, export_id) is None
+
+
+@pytest.mark.asyncio
+async def test_signed_download_url_works_without_authorization_header(client: AsyncClient, db: AsyncSession, exportable_statement: Statement):
+    created = await client.post(
+        f"/v1/statements/{exportable_statement.id}/export",
+        json={"format": "csv"},
+    )
+    signed_download_url = created.json()["download_url"]
+    app.dependency_overrides.pop(get_current_user, None)
+
+    download_response = await client.get(signed_download_url)
+
+    assert download_response.status_code == 200
+    assert download_response.headers["content-type"].startswith("text/csv")
+
+
+@pytest.mark.asyncio
+async def test_unsigned_download_without_authorization_is_rejected(client: AsyncClient, exportable_statement: Statement):
+    created = await client.post(
+        f"/v1/statements/{exportable_statement.id}/export",
+        json={"format": "csv"},
+    )
+    export_id = created.json()["export_id"]
+    app.dependency_overrides.pop(get_current_user, None)
+
+    download_response = await client.get(f"/v1/exports/{export_id}/download")
+
+    assert download_response.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -164,5 +228,5 @@ async def test_download_rejects_expired_exports(client: AsyncClient, db: AsyncSe
     job.expires_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
     await db.commit()
 
-    response = await client.get(f"/v1/exports/{export_id}/download")
+    response = await client.get(created.json()["download_url"])
     assert response.status_code == 410

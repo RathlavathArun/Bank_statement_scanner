@@ -150,7 +150,7 @@ test("opens review UI and edits a transaction", async ({ page }) => {
   await expect(page.getByText("REVIEWED")).toBeVisible();
 });
 
-test("downloads exports with the auth token", async ({ page }) => {
+test("downloads exports with a signed URL", async ({ page }) => {
   await page.route(`**/api/v1/statements/${statementId}/export`, async (route) => {
     expect(route.request().headers().authorization).toBe("Bearer e2e-token");
     await route.fulfill({

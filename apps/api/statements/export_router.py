@@ -3,11 +3,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+import jwt as pyjwt
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from auth.service import decode_token
+from core.config import settings
 from db.database import get_db
 from db.models import ExportJob, Statement, Transaction, User
 from auth.dependencies import get_current_user
@@ -17,10 +21,12 @@ from statements.router import verify_statement_access
 
 
 export_router = APIRouter(tags=["exports"])
+optional_security = HTTPBearer(auto_error=False)
 
 EXPORTS_DIR = Path(__file__).resolve().parents[1] / "exports"
 EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
 EXPORT_TTL_HOURS = 24
+DOWNLOAD_TOKEN_TTL_MINUTES = 15
 READY_STATUSES = {"READY_FOR_REVIEW", "REVIEWED", "EXPORTED"}
 FORMAT_EXT = {"tally_xml": "xml", "csv": "csv", "excel": "xlsx", "json": "json"}
 FORMAT_CONTENT_TYPE = {
@@ -40,6 +46,23 @@ def _make_filename(stmt: Statement | None, fmt: str) -> str:
     bank = getattr(stmt, "bank_code", None) or "bank"
     stamp = utcnow().strftime("%Y-%m-%d")
     return f"{bank}_{stamp}_{fmt}.{ext}"
+
+
+def _create_download_token(job: ExportJob, user: User) -> str:
+    expires = datetime.now(timezone.utc) + timedelta(minutes=DOWNLOAD_TOKEN_TTL_MINUTES)
+    payload = {
+        "sub": user.id,
+        "type": "export_download",
+        "export_id": job.id,
+        "statement_id": job.statement_id,
+        "exp": expires,
+        "iat": datetime.now(timezone.utc),
+    }
+    return pyjwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+
+def _signed_download_url(job: ExportJob, user: User) -> str:
+    return f"/v1/exports/{job.id}/download?download_token={_create_download_token(job, user)}"
 
 
 def _statement_meta(stmt: Statement) -> dict[str, Any]:
@@ -83,6 +106,57 @@ async def _load_transactions(db: AsyncSession, statement_id: str) -> list[Transa
         .order_by(Transaction.row_number)
     )
     return list(result.scalars().all())
+
+
+async def _authorize_download(
+    db: AsyncSession,
+    job: ExportJob,
+    credentials: HTTPAuthorizationCredentials | None,
+    download_token: str | None,
+) -> None:
+    if download_token:
+        try:
+            payload = decode_token(download_token)
+        except pyjwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Export download link has expired") from None
+        except pyjwt.PyJWTError:
+            raise HTTPException(status_code=401, detail="Invalid export download link") from None
+
+        if (
+            payload.get("type") != "export_download"
+            or payload.get("export_id") != job.id
+            or payload.get("statement_id") != job.statement_id
+        ):
+            raise HTTPException(status_code=401, detail="Invalid export download link")
+        return
+
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        payload = decode_token(credentials.credentials)
+    except pyjwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired") from None
+    except pyjwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid authentication token") from None
+
+    if payload.get("type") != "access":
+        raise HTTPException(status_code=401, detail="Invalid token type - expected access token")
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    if not user.email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Email not verified. Please verify your email address before accessing this resource.",
+        )
+
+    await verify_statement_access(db, job.statement_id, user)
 
 
 async def _build_export_content(
@@ -161,7 +235,7 @@ async def create_export(
                 statement_id=statement_id,
                 format=existing_job.format,
                 status=existing_job.status,
-                download_url=existing_job.download_url,
+                download_url=_signed_download_url(existing_job, current_user),
                 filename=_make_filename(stmt, existing_job.format),
                 expires_at=existing_job.expires_at,
                 created_at=existing_job.created_at,
@@ -213,7 +287,7 @@ async def create_export(
         statement_id=statement_id,
         format=job.format,
         status=job.status,
-        download_url=job.download_url,
+        download_url=_signed_download_url(job, current_user),
         filename=_make_filename(stmt, job.format),
         expires_at=job.expires_at,
         created_at=job.created_at,
@@ -241,7 +315,7 @@ async def list_exports(
             "statement_id": job.statement_id,
             "format": job.format,
             "status": job.status,
-            "download_url": job.download_url,
+            "download_url": _signed_download_url(job, current_user) if job.status == "READY" else job.download_url,
             "filename": f"{statement_id[:8]}_{job.format}.{FORMAT_EXT.get(job.format, 'bin')}",
             "created_at": job.created_at,
             "expires_at": job.expires_at,
@@ -253,16 +327,16 @@ async def list_exports(
 @export_router.get("/v1/exports/{export_id}/download")
 async def download_export(
     export_id: str,
+    download_token: str | None = Query(default=None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
 ):
     result = await db.execute(select(ExportJob).where(ExportJob.id == export_id))
     job = result.scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="Export not found")
-    
-    # Verify access to the associated statement
-    await verify_statement_access(db, job.statement_id, current_user)
+
+    await _authorize_download(db, job, credentials, download_token)
 
     if job.status != "READY":
         raise HTTPException(status_code=409, detail=f"Export not ready. Status: {job.status}")
