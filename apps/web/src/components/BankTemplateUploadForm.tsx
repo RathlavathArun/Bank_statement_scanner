@@ -119,7 +119,7 @@ export default function BankTemplateUploadForm() {
 
       // Redirect after success
       setTimeout(() => {
-        router.push("/admin/banks");
+        router.push("/manage/banks");
       }, 2000);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Upload failed";
@@ -155,7 +155,7 @@ export default function BankTemplateUploadForm() {
   return (
     <div className="max-w-2xl space-y-6">
       <div className="flex items-center gap-2 mb-6">
-        <Link href="/admin/banks">
+        <Link href="/manage/banks">
           <Button variant="ghost" size="sm" className="gap-2">
             <ArrowLeft size={18} />
             Back to Banks
@@ -274,7 +274,7 @@ export default function BankTemplateUploadForm() {
               >
                 {loading ? "Uploading..." : "Upload Template"}
               </Button>
-              <Link href="/admin/banks" className="flex-1">
+              <Link href="/manage/banks" className="flex-1">
                 <Button type="button" variant="outline" className="w-full">
                   Cancel
                 </Button>

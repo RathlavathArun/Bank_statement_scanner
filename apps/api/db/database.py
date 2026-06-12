@@ -42,6 +42,6 @@ async def init_db():
         from db.models import (  # noqa: F401
             Firm, User, FirmMember, Client,
             Statement, Transaction, LedgerMapping, Ledger, AuditLog,
-            LLMCache, LLMUsage,
+            LLMCache, LLMUsage, BankTemplate, OTP
         )
         await conn.run_sync(Base.metadata.create_all)

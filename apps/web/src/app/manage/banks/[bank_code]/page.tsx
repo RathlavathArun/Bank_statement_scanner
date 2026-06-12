@@ -65,7 +65,7 @@ const loadBank = async () => {
       });
       setSuccess(true);
       setTimeout(() => {
-        router.push("/admin/banks");
+        router.push("/manage/banks");
       }, 2000);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to update bank";
@@ -92,7 +92,7 @@ const loadBank = async () => {
   if (!bank) {
     return (
       <div className="space-y-4">
-        <Link href="/admin/banks">
+        <Link href="/manage/banks">
           <Button variant="ghost" size="sm" className="gap-2">
             <ArrowLeft size={18} />
             Back to Banks
@@ -118,7 +118,7 @@ const loadBank = async () => {
   return (
     <div className="max-w-2xl space-y-6">
       <div className="flex items-center gap-2">
-        <Link href="/admin/banks">
+        <Link href="/manage/banks">
           <Button variant="ghost" size="sm" className="gap-2">
             <ArrowLeft size={18} />
             Back to Banks
@@ -245,7 +245,7 @@ const loadBank = async () => {
               <Button type="submit" disabled={saving} className="flex-1">
                 {saving ? "Saving..." : "Save Changes"}
               </Button>
-              <Link href="/admin/banks" className="flex-1">
+              <Link href="/manage/banks" className="flex-1">
                 <Button type="button" variant="outline" className="w-full">
                   Cancel
                 </Button>

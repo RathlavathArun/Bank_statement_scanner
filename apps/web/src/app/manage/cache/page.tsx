@@ -101,7 +101,7 @@ export default function CacheStatsPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2 mb-6">
-        <Link href="/admin/banks">
+        <Link href="/manage/banks">
           <Button variant="ghost" size="sm" className="gap-2">
             <ArrowLeft size={18} />
             Back to Banks

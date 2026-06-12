@@ -11,10 +11,8 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
-        source: "/api/auth/:path*",
-        destination: `${apiUrl}/v1/auth/:path*`,
-      },
-      {
+        // All frontend API calls go through /api/* and get proxied to the backend.
+        // e.g. /api/v1/auth/signup → http://api-host:8000/v1/auth/signup
         source: "/api/:path*",
         destination: `${apiUrl}/:path*`,
       },

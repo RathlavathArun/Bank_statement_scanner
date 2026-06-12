@@ -4,9 +4,24 @@
 "use client";
 
 import Link from "next/link";
-import { ReactNode } from "react";
+import { ReactNode, useEffect } from "react";
+import { useRouter, usePathname } from "next/navigation";
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
+
+  useEffect(() => {
+    // Skip verification check on the login and forgot password pages
+    if (pathname?.includes('/manage/login') || pathname?.includes('/manage/forgot-password')) {
+      return;
+    }
+
+    const isVerified = localStorage.getItem("admin_verified");
+    if (isVerified !== "true") {
+      router.push("/manage/login");
+    }
+  }, [router, pathname]);
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       {/* Header */}

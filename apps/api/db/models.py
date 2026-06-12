@@ -260,3 +260,15 @@ class BankTemplate(Base):
 
     # Relationships
     uploader = relationship("User")
+
+
+# ─── OTP Table ──────────────────────────────────────────────
+class OTP(Base):
+    __tablename__ = "otps"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    identifier = Column(String(255), nullable=False, index=True) # Email or phone
+    otp_code = Column(String(10), nullable=False)
+    purpose = Column(String(50), nullable=False) # "login", "reset"
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)

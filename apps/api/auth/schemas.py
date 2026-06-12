@@ -24,6 +24,25 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class PhoneLoginRequest(BaseModel):
+    phone: str = Field(..., max_length=15)
+
+
+class PhoneLoginVerifyRequest(BaseModel):
+    phone: str = Field(..., max_length=15)
+    otp: str = Field(..., min_length=6, max_length=10)
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    otp: str = Field(..., min_length=6, max_length=10)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
 # ─── Response Schemas ────────────────────────────────────────
 class TokenResponse(BaseModel):
     access_token: str

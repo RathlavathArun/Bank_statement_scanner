@@ -110,13 +110,31 @@ resource "aws_ecs_task_definition" "web" {
   container_definitions = jsonencode([
     {
       name      = "web"
-      image     = "nginx:alpine" # Placeholder
+      image     = "nginx:alpine" # Placeholder — deploy.sh replaces with real ECR image
       essential = true
       portMappings = [
         {
           containerPort = 3000
           hostPort      = 3000
         }
+      ]
+      environment = [
+        {
+          name  = "API_URL"
+          value = "http://api.${var.project_name}.local:8000"
+        },
+        {
+          name  = "HOSTNAME"
+          value = "0.0.0.0"
+        },
+        {
+          name  = "PORT"
+          value = "3000"
+        },
+        {
+          name  = "NODE_ENV"
+          value = "production"
+        },
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -249,7 +267,7 @@ resource "aws_ecs_task_definition" "api" {
         },
         {
           name  = "CORS_ORIGINS"
-          value = "http://${aws_lb.main.dns_name}"
+          value = "http://${aws_lb.main.dns_name},https://${aws_lb.main.dns_name},http://localhost:3000"
         },
         {
           name  = "DEBUG"

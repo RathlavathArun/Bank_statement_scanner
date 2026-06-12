@@ -48,7 +48,7 @@ export default function AdminDashboard() {
           </p>
         </div>
 
-        <Link href="/admin/banks/upload">
+        <Link href="/manage/banks/upload">
           <Button className="gap-2">
             <Plus size={16} />
             Upload Template
@@ -89,7 +89,7 @@ export default function AdminDashboard() {
             <p className="mb-4 text-sm text-gray-500">
               Review active banks and update statement parsing templates.
             </p>
-            <Link href="/admin/banks" className="inline-block">
+            <Link href="/manage/banks" className="inline-block">
               <Button className="gap-2">
                 <Settings size={16} />
                 Manage Banks
@@ -104,21 +104,21 @@ export default function AdminDashboard() {
           <CardTitle>Quick Actions</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <Link href="/admin/banks" className="block">
+          <Link href="/manage/banks" className="block">
             <Button variant="outline" className="w-full justify-start gap-2">
               <BarChart3 size={18} />
               View All Banks
             </Button>
           </Link>
 
-          <Link href="/admin/banks/upload" className="block">
+          <Link href="/manage/banks/upload" className="block">
             <Button className="w-full justify-start gap-2">
               <Plus size={18} />
               Upload New Bank Template
             </Button>
           </Link>
 
-          <Link href="/admin/cache" className="block">
+          <Link href="/manage/cache" className="block">
             <Button variant="outline" className="w-full justify-start gap-2">
               <BarChart3 size={18} />
               Cache Statistics

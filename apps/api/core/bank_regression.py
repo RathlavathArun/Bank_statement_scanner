@@ -16,8 +16,15 @@ from db.models import Statement
 from statements.parser import StatementParserError, load_bank_template, parse_statement
 
 
-ROOT_DIR = Path(__file__).resolve().parents[3]
-TEMPLATE_DIR = ROOT_DIR / "packages" / "bank-templates"
+_current_dir = Path(__file__).resolve().parent
+if (_current_dir.parent / "bank-templates").exists():
+    TEMPLATE_DIR = _current_dir.parent / "bank-templates"
+else:
+    # Safely handle local dev vs Docker paths
+    try:
+        TEMPLATE_DIR = _current_dir.parents[2] / "packages" / "bank-templates"
+    except IndexError:
+        TEMPLATE_DIR = _current_dir.parent / "bank-templates"
 REGRESSION_MANIFEST = TEMPLATE_DIR / "regression_manifest.yaml"
 FAILURE_STATUSES = {"FAILED", "PARSE_ERROR"}
 SUCCESS_STATUSES = {"READY_FOR_REVIEW", "REVIEWED", "EXPORTED"}

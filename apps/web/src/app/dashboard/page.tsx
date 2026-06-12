@@ -206,6 +206,7 @@ export default function DashboardPage() {
 
   const handleLogout = () => {
     localStorage.removeItem("access_token");
+    localStorage.removeItem("admin_verified");
     router.push("/login");
   };
 
@@ -317,7 +318,7 @@ export default function DashboardPage() {
           <div className="flex flex-wrap items-center gap-2 md:gap-4">
 <span className="hidden sm:block text-sm font-medium text-slate-600 dark:text-slate-300">              {user?.firm?.name || "My Firm"}
             </span>
-            <Link href="/admin">
+            <Link href="/manage">
               <Button
                 variant="outline"
                 className="glass-input h-9 text-sm"

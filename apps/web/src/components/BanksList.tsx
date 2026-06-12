@@ -89,13 +89,13 @@ export default function BanksList() {
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold">Supported Banks</h1>
         <div className="flex gap-2">
-          <Link href="/admin/banks/upload">
+          <Link href="/manage/banks/upload">
             <Button className="gap-2">
               <Plus size={18} />
               Add Bank
             </Button>
           </Link>
-          <Link href="/admin/cache">
+          <Link href="/manage/cache">
             <Button variant="outline" className="gap-2">
               <RefreshCw size={18} />
               Cache
@@ -161,7 +161,7 @@ export default function BanksList() {
               </CardHeader>
               <CardContent className="border-t pt-4">
                 <div className="flex gap-2">
-                  <Link href={`/admin/banks/${bank.code}`} className="flex-1">
+                  <Link href={`/manage/banks/${bank.code}`} className="flex-1">
                     <Button variant="outline" className="w-full gap-2">
                       <Edit2 size={16} />
                       Edit

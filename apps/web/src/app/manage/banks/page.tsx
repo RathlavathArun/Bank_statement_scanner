@@ -12,7 +12,7 @@ export default function AdminBanksPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2">
-        <Link href="/admin">
+        <Link href="/manage">
           <Button variant="ghost" size="sm" className="gap-2">
             <ArrowLeft size={18} />
             Back to Admin

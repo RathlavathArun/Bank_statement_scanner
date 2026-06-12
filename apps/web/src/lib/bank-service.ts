@@ -31,6 +31,13 @@ async function getAuthHeader(): Promise<Record<string, string>> {
 }
 
 async function handleApiError(response: Response) {
+  if (response.status === 401) {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("access_token");
+      localStorage.removeItem("admin_verified");
+      window.location.href = "/manage/login";
+    }
+  }
   const data = await response.json().catch(() => ({}));
   throw new Error(data.detail || data.message || `API Error: ${response.status}`);
 }
