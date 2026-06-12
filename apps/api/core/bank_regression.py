@@ -16,11 +16,11 @@ from db.models import Statement
 from statements.parser import StatementParserError, load_bank_template, parse_statement
 
 
-_current_dir = Path(__file__).resolve().parent
-if (_current_dir.parent / "bank-templates").exists():
-    TEMPLATE_DIR = _current_dir.parent / "bank-templates"
+if Path("/app/bank-templates").exists():
+    TEMPLATE_DIR = Path("/app/bank-templates")
 else:
     # Safely handle local dev vs Docker paths
+    _current_dir = Path(__file__).resolve().parent
     try:
         TEMPLATE_DIR = _current_dir.parents[2] / "packages" / "bank-templates"
     except IndexError:

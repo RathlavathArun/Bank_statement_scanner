@@ -110,10 +110,15 @@ export default function DashboardPage() {
           },
         });
 
-        const data = await res.json();
+        const data = await readApiResponse(res);
 
         if (data.success) {
-          setUser(data.data.user);
+          const userData = data.data.user;
+          if (userData.email_verified === false) {
+            router.push(`/verify-email?email=${encodeURIComponent(userData.email)}`);
+            return;
+          }
+          setUser(userData);
         } else {
           localStorage.removeItem("access_token");
           router.push("/login");
@@ -209,7 +214,36 @@ export default function DashboardPage() {
     localStorage.removeItem("admin_verified");
     router.push("/login");
   };
+const handleDelete = async (statementId: string) => {
+  if (!confirm("Delete this statement?")) return;
 
+  const token =
+    localStorage.getItem("access_token") ||
+    localStorage.getItem("token");
+
+  try {
+    const res = await fetch(
+      `${API}/v1/statements/${statementId}`,
+      {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
+
+    if (res.ok) {
+      setStatements(prev =>
+        prev.filter(stmt => stmt.id !== statementId)
+      );
+    } else {
+      alert("Failed to delete statement");
+    }
+  } catch (err) {
+    console.error(err);
+    alert("Failed to delete statement");
+  }
+};
   const handleUpload = async () => {
     setError(null);
     if (!file) return;
@@ -513,18 +547,41 @@ export default function DashboardPage() {
                         <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                         View
                       </Link>
-                    ) : stmt.status === "READY_FOR_REVIEW" || stmt.file_type?.toLowerCase() === "pdf" ? (
-                      <Link
-                        href={`/dashboard/review/${stmt.id}`}
-                        data-testid={`review-button-${stmt.id}`}
-                        className="px-3 py-1 rounded-lg text-xs bg-purple-600 hover:bg-purple-500
-                                 text-white font-medium transition-all w-fit"
-                      >
-                        Review →
-                      </Link>
-                    ) : (
-                      <span className="text-xs text-slate-500">—</span>
-                    )}
+                   ) : stmt.status === "READY_FOR_REVIEW" || stmt.file_type?.toLowerCase() === "pdf" ? (
+  <div className="flex items-center gap-2">
+    <Link
+      href={`/dashboard/review/${stmt.id}`}
+      data-testid={`review-button-${stmt.id}`}
+      className="px-3 py-1 rounded-lg text-xs bg-purple-600 hover:bg-purple-500
+               text-white font-medium transition-all w-fit"
+    >
+      Review →
+    </Link>
+
+    <button
+  onClick={() => handleDelete(stmt.id)}
+  title="Delete statement"
+  className="p-2 rounded-md border border-red-300 text-red-600 hover:bg-red-50"
+>
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    className="h-4 w-4"
+    fill="none"
+    viewBox="0 0 24 24"
+    stroke="currentColor"
+  >
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth={2}
+      d="M19 7L18.133 19.142A2 2 0 0116.138 21H7.862A2 2 0 015.867 19.142L5 7m5 4v6m4-6v6M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3m-7 0h8"
+    />
+  </svg>
+</button>
+  </div>
+) : (
+  <span className="text-xs text-slate-500">—</span>
+)}
                   </div>
                 ))}
 
@@ -552,8 +609,8 @@ export default function DashboardPage() {
         </Card>
 
         {transactions.length > 0 && (
-          <Card className="glass-card mt-6 p-4">
-            <h2 className="text-xl font-semibold mb-4 text-slate-800 dark:text-slate-200">
+<Card className="glass-card mt-6 p-4 overflow-x-auto">
+              <h2 className="text-xl font-semibold mb-4 text-slate-800 dark:text-slate-200">
               Extracted Transactions
             </h2>
 
@@ -619,8 +676,8 @@ function UploadControls({
         </p>
       )}
 
-      <div className="flex justify-center gap-2">
-        {["HDFC", "ICICI", "SBI", "AXIS", "KOTAK"].map((b) => (
+<div className="flex flex-wrap justify-center gap-2">
+          {["HDFC", "ICICI", "SBI", "AXIS", "KOTAK"].map((b) => (
           <button
             key={b}
             onClick={() => setBank(b)}
@@ -636,7 +693,7 @@ function UploadControls({
       </div>
 
       {passwordNeeded && (
-        <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-950/30 dark:border-amber-800">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-950/30 dark:border-amber-800">
           <svg className="w-5 h-5 text-amber-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
           </svg>
@@ -663,13 +720,17 @@ function UploadControls({
       {error && <p className="text-sm text-red-600">{error}</p>}
 
       <Button
-        variant="outline"
-        className="glass-input"
-        disabled={!file || (passwordNeeded && !password)}
-        onClick={handleUpload}
-      >
-        {passwordNeeded ? "Unlock & Upload" : "Upload Statement"}
-      </Button>
+  variant="outline"
+  className={`w-full sm:w-auto transition-all ${
+    file
+      ? "bg-purple-600 hover:bg-purple-700 text-white border-purple-600"
+      : "glass-input"
+  }`}
+  disabled={!file || (passwordNeeded && !password)}
+  onClick={handleUpload}
+>
+  {passwordNeeded ? "Unlock & Upload" : "Upload Statement"}
+</Button>
     </div>
   );
 }

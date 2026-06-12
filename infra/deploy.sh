@@ -97,6 +97,7 @@ API_IMAGE_LATEST="$ECR_API_URL:latest"
 log "Building API image (tag: $IMAGE_TAG)..."
 # Build from repo root so Dockerfile can COPY packages/bank-templates
 docker.exe build \
+    --no-cache \
     -f apps/api/Dockerfile \
     -t "$API_IMAGE" \
     -t "$API_IMAGE_LATEST" \
@@ -121,6 +122,7 @@ API_INTERNAL_URL="http://${API_DISCOVERY_DNS}:8000"
 
 log "Building Web image (API_URL=$API_INTERNAL_URL)..."
 docker.exe build \
+    --no-cache \
     -f apps/web/Dockerfile \
     --build-arg "API_URL=$API_INTERNAL_URL" \
     -t "$WEB_IMAGE" \

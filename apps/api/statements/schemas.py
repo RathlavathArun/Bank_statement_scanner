@@ -1,5 +1,5 @@
 """Pydantic schemas for statements and transactions API."""
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from typing import Optional, List
 from datetime import date, datetime
 from decimal import Decimal
@@ -117,3 +117,33 @@ class EnrichTransactionsRequest(BaseModel):
     only_missing: bool = True
     limit: int = 50
     force: bool = False  # When True, clears stale cache and re-runs scoring from scratch
+
+
+class ExportRequest(BaseModel):
+    format: str
+    company_name: Optional[str] = "My Company"
+    bank_ledger_name: Optional[str] = "Bank Account"
+    strict_reviewed_only: bool = False
+
+    @field_validator("format")
+    @classmethod
+    def validate_format(cls, value: str) -> str:
+        allowed = {"tally_xml", "csv", "json", "excel"}
+        if value not in allowed:
+            raise ValueError(f"format must be one of {allowed}")
+        return value
+
+
+class ExportJobResponse(BaseModel):
+    export_id: str
+    statement_id: str
+    format: str
+    status: str
+    download_url: Optional[str] = None
+    filename: Optional[str] = None
+    expires_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+    transaction_count: int = 0
+    idempotent: bool = False
+
+    model_config = ConfigDict(from_attributes=True)

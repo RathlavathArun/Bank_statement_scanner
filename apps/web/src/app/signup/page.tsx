@@ -8,6 +8,8 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
+import { readApiResponse } from "@/lib/utils";
+
 export default function SignupPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -29,11 +31,11 @@ export default function SignupPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password, full_name, firm_name }),
       });
-      const data = await res.json();
+      const data = await readApiResponse(res);
 
       if (res.ok && data.success) {
         localStorage.setItem("access_token", data.data.tokens.access_token);
-        router.push("/dashboard");
+        router.push(`/verify-email?email=${encodeURIComponent(email as string)}`);
       } else {
         setError(data.detail || data.error || data.message || "Signup failed");
       }
@@ -44,19 +46,13 @@ export default function SignupPage() {
     }
   };
 
-    return (
-<div className="flex items-center justify-center min-h-screen relative overflow-hidden px-4">
-    <Link
-      href="/"
-      className="absolute top-6 left-6 z-20 rounded-xl glass-input px-4 py-2 text-sm font-medium"
-    >
-      ← Back to App
-    </Link>
+  return (
+    <div className="flex items-center justify-center min-h-screen relative overflow-hidden">
       {/* Decorative blurred shapes behind the card */}
       <div className="absolute top-1/4 right-1/4 w-96 h-96 bg-blue-500/30 rounded-full mix-blend-multiply filter blur-3xl opacity-50 animate-blob"></div>
       <div className="absolute bottom-1/4 left-1/4 w-72 h-72 bg-emerald-500/30 rounded-full mix-blend-multiply filter blur-3xl opacity-50 animate-blob animation-delay-2000"></div>
 
-      <Card className="w-full max-w-[450px] glass-card border-white/40 shadow-2xl relative z-10 p-2">
+      <Card className="w-[450px] glass-card border-white/40 shadow-2xl relative z-10 p-2">
         <CardHeader className="space-y-1">
           <CardTitle className="text-3xl font-bold tracking-tight text-center bg-gradient-to-br from-slate-800 to-slate-500 dark:from-white dark:to-slate-400 bg-clip-text text-transparent">
             Create an account

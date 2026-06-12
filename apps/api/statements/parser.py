@@ -22,11 +22,15 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
-_current_dir = Path(__file__).resolve().parent
-if (_current_dir.parent / "bank-templates").exists():
-    TEMPLATE_DIR = _current_dir.parent / "bank-templates"
+if Path("/app/bank-templates").exists():
+    TEMPLATE_DIR = Path("/app/bank-templates")
 else:
-    TEMPLATE_DIR = _current_dir.parents[2] / "packages" / "bank-templates"
+    # Safely handle local dev vs Docker paths
+    _current_dir = Path(__file__).resolve().parent
+    try:
+        TEMPLATE_DIR = _current_dir.parents[2] / "packages" / "bank-templates"
+    except IndexError:
+        TEMPLATE_DIR = _current_dir.parent / "bank-templates"
 
 
 class StatementParserError(Exception):

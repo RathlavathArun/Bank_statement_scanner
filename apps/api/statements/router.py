@@ -10,7 +10,13 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
-from db.models import Client, Firm, LLMCache, Statement, Transaction
+from db.models import Client, Firm, FirmMember, LLMCache, Statement, Transaction, User
+from auth.dependencies import get_current_user
+from fastapi.concurrency import run_in_threadpool
+import logging
+
+logger = logging.getLogger(__name__)
+
 from statements.parser import PDFReadError, PasswordProtectedError, StatementParserError, parse_statement
 from statements.ledger_memory import (
     remember_ledger_mapping,
@@ -35,7 +41,6 @@ router = APIRouter(prefix="/v1/statements", tags=["statements"])
 UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-DEFAULT_FIRM_NAME = "Default Firm"
 DEFAULT_CLIENT_NAME = "Default Client"
 
 # Allowed statement statuses
@@ -43,6 +48,87 @@ ALLOWED_STATUSES = {
     "UPLOADED", "PARSING", "OCR", "READY_FOR_REVIEW", "REVIEWED", "EXPORTED", "FAILED", "PARSE_ERROR"
 }
 
+
+# ─── Data Isolation Helpers ─────────────────────────────────
+
+async def get_user_firm_id(db: AsyncSession, user: User) -> str | None:
+    """Get the firm_id for the current user."""
+    result = await db.execute(
+        select(FirmMember.firm_id).where(FirmMember.user_id == user.id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_user_client_ids(db: AsyncSession, firm_id: str) -> list[str]:
+    """Get all client IDs belonging to the user's firm."""
+    result = await db.execute(
+        select(Client.id).where(Client.firm_id == firm_id)
+    )
+    return list(result.scalars().all())
+
+
+async def verify_statement_access(
+    db: AsyncSession, statement_id: str, user: User
+) -> Statement:
+    """
+    Load statement and verify the current user has access via firm membership.
+    Returns 404 (not 403) to prevent information leakage about statement existence.
+    """
+    stmt = await db.get(Statement, statement_id)
+    if not stmt:
+        raise HTTPException(status_code=404, detail="Statement not found")
+
+    firm_id = await get_user_firm_id(db, user)
+    if firm_id:
+        client = await db.get(Client, stmt.client_id)
+        if not client or client.firm_id != firm_id:
+            raise HTTPException(status_code=404, detail="Statement not found")
+    else:
+        # No firm membership — check uploaded_by directly
+        if stmt.uploaded_by != user.id:
+            raise HTTPException(status_code=404, detail="Statement not found")
+
+    return stmt
+
+
+async def get_or_create_firm_client(db: AsyncSession, user: User) -> Client:
+    """Get or create a default client under the user's firm."""
+    firm_id = await get_user_firm_id(db, user)
+
+    if firm_id:
+        # Look for existing default client in the firm
+        result = await db.execute(
+            select(Client).where(
+                Client.firm_id == firm_id,
+                Client.name == DEFAULT_CLIENT_NAME,
+            )
+        )
+        client = result.scalar_one_or_none()
+        if client:
+            return client
+
+        # Create one
+        client = Client(firm_id=firm_id, name=DEFAULT_CLIENT_NAME)
+        db.add(client)
+        await db.flush()
+        return client
+    else:
+        # User has no firm — create a personal firm for them
+        firm = Firm(name=f"{user.full_name or user.email}'s Firm")
+        db.add(firm)
+        await db.flush()
+
+        membership = FirmMember(firm_id=firm.id, user_id=user.id, role="owner")
+        db.add(membership)
+        await db.flush()
+
+        client = Client(firm_id=firm.id, name=DEFAULT_CLIENT_NAME)
+        db.add(client)
+        await db.flush()
+        return client
+
+
+# ─── Utilities ──────────────────────────────────────────────
 
 def file_type_for(filename: str) -> str:
     suffix = Path(filename).suffix.lower().lstrip(".")
@@ -55,23 +141,6 @@ def file_type_for(filename: str) -> str:
 
 def money(value: Decimal | None) -> str | None:
     return str(value) if value is not None else None
-
-
-async def get_or_create_default_client(db: AsyncSession) -> Client:
-    result = await db.execute(select(Client).where(Client.name == DEFAULT_CLIENT_NAME))
-    client = result.scalar_one_or_none()
-    if client:
-        return client
-
-    firm = Firm(name=DEFAULT_FIRM_NAME)
-    db.add(firm)
-    await db.flush()
-
-    client = Client(firm_id=firm.id, name=DEFAULT_CLIENT_NAME)
-    db.add(client)
-    await db.flush()
-
-    return client
 
 
 def serialize_statement(statement: Statement) -> dict:
@@ -98,6 +167,8 @@ def serialize_transaction(transaction: Transaction) -> dict:
         "balance": money(transaction.balance),
     }
 
+
+# ─── Background Tasks (no user context) ─────────────────────
 
 async def _background_enrich(statement_id: str, transaction_ids: list[str]) -> None:
     """Run heuristic / Claude enrichment for freshly parsed transactions."""
@@ -127,6 +198,91 @@ async def _background_enrich(statement_id: str, transaction_ids: list[str]) -> N
         await session.commit()
 
 
+async def _background_parse_statement(statement_id: str, file_path: Path, bank: str | None, password: str | None) -> None:
+    from db.database import async_session
+    
+    async with async_session() as db:
+        statement = await db.get(Statement, statement_id)
+        if not statement:
+            return
+
+        enrich_tx_ids: list[str] = []
+        try:
+            parsed = await run_in_threadpool(parse_statement, file_path, bank, password=password)
+        except PasswordProtectedError as exc:
+            statement.status = "FAILED"
+            statement.error_message = str(exc)
+            await db.commit()
+            await notify_status_change(statement.id, statement.status)
+            return
+        except PDFReadError as exc:
+            statement.status = "FAILED"
+            statement.error_message = str(exc)
+            await db.commit()
+            await notify_status_change(statement.id, statement.status)
+            return
+        except StatementParserError as exc:
+            statement.status = "READY_FOR_REVIEW" if statement.file_type == "pdf" else "FAILED"
+            statement.error_message = str(exc)
+            statement.metadata_ = {
+                **statement.metadata_,
+                "parser": "pdf_text",
+                "parse_warning": str(exc),
+                "row_count": 0,
+            }
+            await db.commit()
+            await notify_status_change(statement.id, statement.status)
+            return
+        except Exception as exc:
+            logger.exception("Unexpected error parsing statement")
+            statement.status = "FAILED"
+            statement.error_message = f"Unexpected error: {exc}"
+            await db.commit()
+            await notify_status_change(statement.id, statement.status)
+            return
+
+        is_ocr = parsed.metadata.get("parser") == "ocr"
+
+        if is_ocr:
+            statement.status = "OCR"
+            await db.commit()
+            await notify_status_change(statement.id, "OCR")
+
+        statement.metadata_ = {
+            **statement.metadata_,
+            **parsed.metadata,
+        }
+        statement.status = "READY_FOR_REVIEW"
+
+        new_txns: list[Transaction] = []
+        for txn in parsed.transactions:
+            tx_kwargs: dict = dict(
+                statement_id=statement.id,
+                row_number=txn.row_number,
+                txn_date=txn.txn_date,
+                value_date=txn.value_date,
+                narration=txn.narration,
+                reference_no=txn.reference_no,
+                debit=txn.debit,
+                credit=txn.credit,
+                balance=txn.balance,
+            )
+            if is_ocr and txn.ocr_confidence is not None:
+                tx_kwargs["ocr_confidence"] = txn.ocr_confidence
+            new_txns.append(Transaction(**tx_kwargs))
+
+        db.add_all(new_txns)
+        await db.commit()
+        enrich_tx_ids = [tx.id for tx in new_txns]
+
+        await notify_status_change(statement.id, statement.status)
+
+        if enrich_tx_ids:
+            await _background_enrich(statement.id, enrich_tx_ids)
+
+
+# ─── Endpoints (all require authentication) ─────────────────
+
 @router.post("/upload")
 async def upload_statement(
     background_tasks: BackgroundTasks,
@@ -134,12 +290,14 @@ async def upload_statement(
     bank: str | None = Form(default=None),
     password: str | None = Form(default=None),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     original_filename = file.filename or "statement"
-    client = await get_or_create_default_client(db)
+    client = await get_or_create_firm_client(db, current_user)
 
     statement = Statement(
         client_id=client.id,
+        uploaded_by=current_user.id,
         file_url="",
         file_type=file_type_for(original_filename),
         bank_code=bank,
@@ -160,78 +318,33 @@ async def upload_statement(
     await db.flush()
     await notify_status_change(statement.id, statement.status)
 
-    enrich_tx_ids: list[str] = []
-    try:
-        parsed = parse_statement(file_path, bank, password=password)
-    except PasswordProtectedError as exc:
-        statement.status = "FAILED"
-        statement.error_message = str(exc)
-        await db.flush()
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error_code": "PASSWORD_REQUIRED" if not password else "INVALID_PASSWORD",
-                "message": str(exc),
-                "statement_id": statement.id,
-            },
-        )
-    except PDFReadError as exc:
-        statement.status = "FAILED"
-        statement.error_message = str(exc)
-        await db.flush()
-    except StatementParserError as exc:
-        statement.status = "READY_FOR_REVIEW" if statement.file_type == "pdf" else "FAILED"
-        statement.error_message = str(exc)
-        statement.metadata_ = {
-            **statement.metadata_,
-            "parser": "pdf_text",
-            "parse_warning": str(exc),
-            "row_count": 0,
-        }
-        await db.flush()
-    else:
-        is_ocr = parsed.metadata.get("parser") == "ocr"
-
-        # Notify watchers that OCR is in progress (the sync call already ran,
-        # but this keeps the status timeline accurate for the frontend).
-        if is_ocr:
-            statement.status = "OCR"
+    # Quick synchronous check for password protection before backgrounding
+    if statement.file_type == "pdf":
+        import pdfplumber
+        from pdfminer.pdfdocument import PDFPasswordIncorrect
+        try:
+            with pdfplumber.open(str(file_path), password=password) as pdf:
+                pass
+        except PDFPasswordIncorrect:
+            statement.status = "FAILED"
+            exc_msg = "Incorrect password. Please provide the correct PDF password." if password else "This PDF is password-protected. Please re-upload with the document password."
+            statement.error_message = exc_msg
             await db.flush()
-            await notify_status_change(statement.id, "OCR")
-
-        statement.metadata_ = {
-            **statement.metadata_,
-            **parsed.metadata,
-        }
-        statement.status = "READY_FOR_REVIEW"
-
-        # Build Transaction rows; include OCR-specific columns when available.
-        new_txns: list[Transaction] = []
-        for txn in parsed.transactions:
-            tx_kwargs: dict = dict(
-                statement_id=statement.id,
-                row_number=txn.row_number,
-                txn_date=txn.txn_date,
-                value_date=txn.value_date,
-                narration=txn.narration,
-                reference_no=txn.reference_no,
-                debit=txn.debit,
-                credit=txn.credit,
-                balance=txn.balance,
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error_code": "INVALID_PASSWORD" if password else "PASSWORD_REQUIRED",
+                    "message": exc_msg,
+                    "statement_id": statement.id,
+                },
             )
-            if is_ocr and txn.ocr_confidence is not None:
-                tx_kwargs["ocr_confidence"] = txn.ocr_confidence
-            new_txns.append(Transaction(**tx_kwargs))
+        except Exception:
+            pass  # let the background task handle other PDFReadErrors
 
-        db.add_all(new_txns)
-        await db.flush()
-        enrich_tx_ids = [tx.id for tx in new_txns]
+    await db.commit()
 
-    await notify_status_change(statement.id, statement.status)
-
-    if enrich_tx_ids:
-        background_tasks.add_task(_background_enrich, statement.id, enrich_tx_ids)
+    background_tasks.add_task(_background_parse_statement, statement.id, file_path, bank, password)
 
     return {
         "success": True,
@@ -244,14 +357,9 @@ async def upload_statement(
 async def get_statement_status(
     statement_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    statement = await db.get(Statement, statement_id)
-
-    if not statement:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Statement not found",
-        )
+    statement = await verify_statement_access(db, statement_id, current_user)
 
     return {
         "success": True,
@@ -264,14 +372,9 @@ async def get_statement_status(
 async def get_statement_result(
     statement_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    statement = await db.get(Statement, statement_id)
-
-    if not statement:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Statement not found",
-        )
+    statement = await verify_statement_access(db, statement_id, current_user)
 
     result = await db.execute(
         select(Transaction)
@@ -302,9 +405,30 @@ async def list_statements(
     bank_id: Optional[str] = None,
     bank_code: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """List all statements with pagination and filters."""
-    query = select(Statement)
+    """List statements belonging to the current user's firm."""
+    # Firm-level data isolation
+    firm_id = await get_user_firm_id(db, current_user)
+    if not firm_id:
+        # No firm — return empty
+        return {
+            "success": True,
+            "data": PaginatedStatements(
+                items=[], total=0, page=page, size=size, pages=0,
+            ).model_dump()
+        }
+
+    client_ids = await get_user_client_ids(db, firm_id)
+    if not client_ids:
+        return {
+            "success": True,
+            "data": PaginatedStatements(
+                items=[], total=0, page=page, size=size, pages=0,
+            ).model_dump()
+        }
+
+    query = select(Statement).where(Statement.client_id.in_(client_ids))
     
     if status:
         query = query.where(Statement.status == status)
@@ -370,12 +494,11 @@ async def list_transactions(
     date_to: Optional[str] = None,
     search: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """List transactions for a statement with filtering."""
-    # Verify statement exists
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    # Verify ownership
+    await verify_statement_access(db, statement_id, current_user)
     
     query = select(Transaction).where(Transaction.statement_id == statement_id)
     
@@ -426,8 +549,11 @@ async def update_transaction(
     transaction_id: str,
     body: TransactionUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Update a single transaction."""
+    stmt = await verify_statement_access(db, statement_id, current_user)
+
     result = await db.execute(
         select(Transaction).where(
             Transaction.id == transaction_id,
@@ -438,15 +564,13 @@ async def update_transaction(
     
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
-
-    stmt = await db.get(Statement, statement_id)
     
     # Apply updates (only present fields)
     updates = body.model_dump(exclude_unset=True)
     for field, value in updates.items():
         setattr(tx, field, value)
 
-    if stmt and updates.get("confirmed_ledger"):
+    if updates.get("confirmed_ledger"):
         await remember_ledger_mapping(
             db=db,
             transaction=tx,
@@ -469,11 +593,10 @@ async def get_ledger_suggestions(
     transaction_id: str,
     limit: int = Query(5, ge=1, le=20),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Suggest ledgers from learned client mappings and optional Qdrant memory."""
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    stmt = await verify_statement_access(db, statement_id, current_user)
 
     result = await db.execute(
         select(Transaction).where(
@@ -500,11 +623,10 @@ async def enrich_statement_transactions(
     statement_id: str,
     body: EnrichTransactionsRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Enrich transaction narrations with Claude when configured, otherwise local rules."""
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    await verify_statement_access(db, statement_id, current_user)
 
     query = select(Transaction).where(Transaction.statement_id == statement_id)
     if body.transaction_ids:
@@ -557,11 +679,10 @@ async def enrich_statement_transactions(
 async def get_statement_llm_usage(
     statement_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Return LLM cache/cost totals for a statement."""
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    await verify_statement_access(db, statement_id, current_user)
 
     return {
         "success": True,
@@ -577,12 +698,10 @@ async def bulk_update_transactions(
     statement_id: str,
     body: BulkUpdateRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Bulk update multiple transactions in a single transaction."""
-    # Verify statement exists
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    stmt = await verify_statement_access(db, statement_id, current_user)
     
     updated = 0
     failed = []
@@ -628,11 +747,10 @@ async def update_statement_status(
     statement_id: str,
     body: StatementStatusUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Update statement status."""
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    stmt = await verify_statement_access(db, statement_id, current_user)
     
     if body.status not in ALLOWED_STATUSES:
         raise HTTPException(
@@ -660,11 +778,10 @@ async def update_statement_status(
 async def get_statement_file(
     statement_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Download the uploaded statement file."""
-    stmt = await db.get(Statement, statement_id)
-    if not stmt:
-        raise HTTPException(status_code=404, detail="Statement not found")
+    stmt = await verify_statement_access(db, statement_id, current_user)
     
     file_path = Path(stmt.file_url)
     if not file_path.exists():

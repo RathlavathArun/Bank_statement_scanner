@@ -32,6 +32,7 @@ htmlcov/
 .DS_Store
 Thumbs.db
 apps/api/uploads/
+apps/api/exports/
 apps/api/bank_statements.db
 
 .terraform/
