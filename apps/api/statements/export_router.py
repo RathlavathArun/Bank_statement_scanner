@@ -5,7 +5,6 @@ from typing import Any
 
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +37,8 @@ FORMAT_CONTENT_TYPE = {
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    # Always timezone-aware — matches DateTime(timezone=True) columns in the ORM.
+    return datetime.now(timezone.utc)
 
 
 def _make_filename(stmt: Statement | None, fmt: str) -> str:
@@ -340,35 +340,41 @@ async def download_export(
 
     if job.status != "READY":
         raise HTTPException(status_code=409, detail=f"Export not ready. Status: {job.status}")
-    if job.expires_at and job.expires_at < utcnow():
-        raise HTTPException(status_code=410, detail="Export link has expired")
+
+    # Compare timezone-aware datetimes. expires_at from DB is tz-aware; utcnow() now is too.
+    if job.expires_at:
+        expires = job.expires_at
+        if expires.tzinfo is None:
+            # Treat legacy naive datetimes stored in DB as UTC
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires < utcnow():
+            raise HTTPException(status_code=410, detail="Export link has expired")
 
     stmt = await db.get(Statement, job.statement_id)
     if not stmt:
         raise HTTPException(status_code=404, detail="Statement not found")
 
-    if not job.file_path or not os.path.exists(job.file_path):
-        try:
-            payload, _ = await _build_export_content(
-                db=db,
-                stmt=stmt,
-                fmt=job.format,
-                company_name=job.company_name,
-                bank_ledger_name=job.bank_ledger,
-            )
-            file_path = _write_export_file(job.statement_id, job.id, job.format, payload)
-            job.file_path = str(file_path)
-            job.expires_at = utcnow() + timedelta(hours=EXPORT_TTL_HOURS)
-            await db.commit()
-            await db.refresh(job)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Export file regeneration failed: {exc}") from exc
+    # Always regenerate content in memory.
+    # Relying on job.file_path is not safe in containerised/ECS deployments where
+    # the file may have been written on a different task instance or wiped on restart.
+    try:
+        content_bytes, _ = await _build_export_content(
+            db=db,
+            stmt=stmt,
+            fmt=job.format,
+            company_name=job.company_name,
+            bank_ledger_name=job.bank_ledger,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Export generation failed: {exc}") from exc
 
     filename = _make_filename(stmt, job.format)
-    return FileResponse(
-        path=job.file_path,
-        media_type=FORMAT_CONTENT_TYPE.get(job.format, "application/octet-stream"),
-        filename=filename,
+    media_type = FORMAT_CONTENT_TYPE.get(job.format, "application/octet-stream")
+    return Response(
+        content=content_bytes,
+        media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
