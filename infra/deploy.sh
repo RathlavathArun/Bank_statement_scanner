@@ -168,12 +168,6 @@ env_vars['CORS_ORIGINS'] = {
     'name': 'CORS_ORIGINS',
     'value': 'http://$ALB_DNS,https://$ALB_DNS,http://localhost:3000'
 }
-# Ensure SMTP_FROM_EMAIL matches SMTP_USERNAME (the verified sender) so AWS SES accepts it
-smtp_user = env_vars.get('SMTP_USERNAME', {}).get('value', 'gouthamnaroju@gmail.com')
-env_vars['SMTP_FROM_EMAIL'] = {
-    'name': 'SMTP_FROM_EMAIL',
-    'value': smtp_user
-}
 td['containerDefinitions'][0]['environment'] = list(env_vars.values())
 # Keep only the fields needed for register-task-definition
 keep = ['family','taskRoleArn','executionRoleArn','networkMode','containerDefinitions',
