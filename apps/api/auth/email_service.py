@@ -1,6 +1,6 @@
 """
 Email delivery service for OTP codes.
-Uses AWS SES in production (when AWS_REGION is set) and falls back to
+Uses AWS SES in production (when EMAIL_PROVIDER=ses or AWS runtime is detected) and falls back to
 SMTP (Gmail) for local development.
 
 AWS IPs are blocked by Gmail SMTP — SES is the correct solution for production.
@@ -70,13 +70,14 @@ async def _send_via_ses(to_email: str, subject: str, plain_text: str, html_body:
     """Send email using AWS SES (boto3). Used in production on AWS."""
     try:
         import boto3
-        from botocore.exceptions import ClientError
 
-        # Use SMTP_FROM_EMAIL if set, otherwise fall back to SMTP_USERNAME
-        # Both should be the verified SES sender identity (gouthamnaroju@gmail.com)
         from_email = settings.SMTP_FROM_EMAIL or settings.SMTP_USERNAME
+        if not from_email:
+            logger.error("SES sender is not configured. Set SMTP_FROM_EMAIL to a verified SES identity.")
+            return False
 
-        client = boto3.client("ses", region_name=os.environ.get("AWS_DEFAULT_REGION", "ap-south-1"))
+        region_name = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "ap-south-1"
+        client = boto3.client("ses", region_name=region_name)
         client.send_email(
             Source=f"{settings.SMTP_FROM_NAME} <{from_email}>",
             Destination={"ToAddresses": [to_email]},
@@ -150,26 +151,25 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "verify_em
     )
     html_body = _build_otp_html(otp_code, purpose)
 
-    # ── No credentials at all → log to console (dev fallback) ──
-    if not settings.SMTP_USERNAME or not settings.SMTP_PASSWORD:
-        logger.warning(
-            "No SMTP credentials configured. OTP for %s (%s): %s",
-            to_email, purpose, otp_code,
-        )
-        return True
-
     # ── Production: prefer AWS SES ──────────────────────────────
     # AWS blocks outbound Gmail SMTP from ECS/EC2 IPs.
-    # Detect we're running on AWS by checking for ECS-specific env vars only
-    # (not AWS_DEFAULT_REGION, which can be set locally too).
+    # Detect we're running on AWS by checking for ECS-specific env vars.
     running_on_aws = bool(
         os.environ.get("ECS_CONTAINER_METADATA_URI")
         or os.environ.get("ECS_CONTAINER_METADATA_URI_V4")
         or os.environ.get("AWS_EXECUTION_ENV")
     )
-    if running_on_aws:
-        logger.info("Running on AWS — using SES for email delivery")
+    if settings.EMAIL_PROVIDER.lower() == "ses" or running_on_aws:
+        logger.info("Using SES for email delivery")
         return await _send_via_ses(to_email, subject, plain_text, html_body)
+
+    # ── No SMTP credentials → log to console (dev fallback) ─────
+    if not settings.SMTP_USERNAME or not settings.SMTP_PASSWORD:
+        logger.warning(
+            "No email credentials configured. OTP for %s (%s): %s",
+            to_email, purpose, otp_code,
+        )
+        return True
 
     # ── Local development: use SMTP ─────────────────────────────
     return await _send_via_smtp(to_email, subject, plain_text, html_body)

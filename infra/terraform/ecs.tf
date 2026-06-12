@@ -85,6 +85,28 @@ resource "aws_iam_role_policy_attachment" "ecs_task_s3_policy" {
   policy_arn = aws_iam_policy.s3_access.arn
 }
 
+resource "aws_iam_policy" "ses_send_email" {
+  name = "${var.project_name}-ses-send-email"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "ses:SendEmail",
+          "ses:SendRawEmail"
+        ]
+        Effect   = "Allow"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_task_ses_policy" {
+  role       = aws_iam_role.ecs_task_role.name
+  policy_arn = aws_iam_policy.ses_send_email.arn
+}
+
 # --- CloudWatch Logs ---
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = "/ecs/${var.project_name}"
@@ -251,6 +273,22 @@ resource "aws_ecs_task_definition" "api" {
         {
           name  = "SMTP_PASSWORD"
           value = var.smtp_password
+        },
+        {
+          name  = "SMTP_FROM_EMAIL"
+          value = var.smtp_from_email != "" ? var.smtp_from_email : var.smtp_username
+        },
+        {
+          name  = "EMAIL_PROVIDER"
+          value = "ses"
+        },
+        {
+          name  = "AWS_REGION"
+          value = var.aws_region
+        },
+        {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
         },
         {
           name  = "S3_ENDPOINT"

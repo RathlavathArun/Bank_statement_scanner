@@ -157,17 +157,23 @@ API_TASK_DEF=$(aws ecs describe-task-definition \
     --query 'taskDefinition' \
     --output json)
 
-# Replace the placeholder/old image with the new one and update CORS
+# Replace the placeholder/old image with the new one and update runtime config
 NEW_API_TASK_DEF=$(echo "$API_TASK_DEF" | python3 -c "
 import sys, json
 td = json.load(sys.stdin)
 td['containerDefinitions'][0]['image'] = '$API_IMAGE'
-# Update CORS_ORIGINS to include both HTTP and HTTPS
 env_vars = {e['name']: e for e in td['containerDefinitions'][0].get('environment', [])}
 env_vars['CORS_ORIGINS'] = {
     'name': 'CORS_ORIGINS',
     'value': 'http://$ALB_DNS,https://$ALB_DNS,http://localhost:3000'
 }
+env_vars['EMAIL_PROVIDER'] = {'name': 'EMAIL_PROVIDER', 'value': 'ses'}
+env_vars['AWS_REGION'] = {'name': 'AWS_REGION', 'value': '$AWS_REGION'}
+env_vars['AWS_DEFAULT_REGION'] = {'name': 'AWS_DEFAULT_REGION', 'value': '$AWS_REGION'}
+if not env_vars.get('SMTP_FROM_EMAIL', {}).get('value'):
+    smtp_username = env_vars.get('SMTP_USERNAME', {}).get('value', '')
+    if smtp_username:
+        env_vars['SMTP_FROM_EMAIL'] = {'name': 'SMTP_FROM_EMAIL', 'value': smtp_username}
 td['containerDefinitions'][0]['environment'] = list(env_vars.values())
 # Keep only the fields needed for register-task-definition
 keep = ['family','taskRoleArn','executionRoleArn','networkMode','containerDefinitions',

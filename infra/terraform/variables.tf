@@ -36,6 +36,12 @@ variable "smtp_password" {
   default     = ""
 }
 
+variable "smtp_from_email" {
+  description = "Verified sender email identity used by SES and SMTP From headers"
+  type        = string
+  default     = ""
+}
+
 variable "vpc_cidr" {
   description = "CIDR block for the VPC"
   type        = string

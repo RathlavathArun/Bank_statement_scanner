@@ -36,6 +36,9 @@ apps/api/exports/
 apps/api/bank_statements.db
 
 .terraform/
+*.tfvars
+*.tfvars.json
+api_td_latest.json
 *.tfstate
 *.tfstate.backup
 

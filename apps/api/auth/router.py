@@ -49,7 +49,57 @@ async def signup(
     """
     # Check if email already exists
     existing = await db.execute(select(User).where(User.email == req.email))
-    if existing.scalar_one_or_none():
+    existing_user = existing.scalar_one_or_none()
+    if existing_user:
+        if not existing_user.email_verified:
+            otp_code = await create_otp(db, email=req.email, purpose="verify_email", user_id=existing_user.id)
+            if otp_code is None:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Too many OTP requests. Please try again later.",
+                )
+
+            membership_result = await db.execute(
+                select(FirmMember).where(FirmMember.user_id == existing_user.id)
+            )
+            membership = membership_result.scalar_one_or_none()
+            firm = None
+            if membership:
+                firm_result = await db.execute(select(Firm).where(Firm.id == membership.firm_id))
+                firm = firm_result.scalar_one_or_none()
+
+            await db.commit()
+            email_sent = await send_otp_email(req.email, otp_code, "verify_email")
+            if not email_sent:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Account exists but the verification email could not be sent. Please try again.",
+                )
+
+            access_token = create_access_token(existing_user.id, firm.id if firm else None)
+            refresh_token = create_refresh_token(existing_user.id)
+
+            return ApiResponse.ok(
+                data={
+                    "user": {
+                        "id": existing_user.id,
+                        "email": existing_user.email,
+                        "full_name": existing_user.full_name,
+                        "email_verified": False,
+                    },
+                    "firm": {
+                        "id": firm.id if firm else None,
+                        "name": firm.name if firm else None,
+                    },
+                    "tokens": TokenResponse(
+                        access_token=access_token,
+                        refresh_token=refresh_token,
+                        expires_in=900,
+                    ).model_dump(),
+                    "message": "Account already exists but is not verified. A new verification code has been sent.",
+                }
+            )
+
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="An account with this email already exists",
@@ -93,14 +143,19 @@ async def signup(
     if otp_code is None:
         # Rate limited — still create the account but inform the user
         logger.warning("OTP rate-limited during signup for %s — account created but no email sent", req.email)
+        await db.commit()
     else:
-        background_tasks.add_task(send_otp_email, req.email, otp_code, "verify_email")
+        await db.commit()
+        email_sent = await send_otp_email(req.email, otp_code, "verify_email")
+        if not email_sent:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Account created, but the verification email could not be sent. Please use resend code or try again.",
+            )
 
     # Generate tokens
     access_token = create_access_token(user.id, firm.id)
     refresh_token = create_refresh_token(user.id)
-
-    await db.commit()
 
     return ApiResponse.ok(
         data={
@@ -250,7 +305,12 @@ async def resend_otp(
         )
 
     await db.commit()
-    background_tasks.add_task(send_otp_email, req.email, otp_code, req.purpose)
+    email_sent = await send_otp_email(req.email, otp_code, req.purpose)
+    if not email_sent:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="The code could not be sent. Please try again.",
+        )
 
     return ApiResponse.ok(data={"message": "If the email exists, a new code has been sent."})
 
@@ -268,19 +328,31 @@ async def forgot_password(
     result = await db.execute(select(User).where(User.email == req.email))
     user = result.scalar_one_or_none()
 
-    if user:
-        otp_code = await create_otp(db, email=req.email, purpose="reset_password", user_id=user.id)
-        await db.commit()  # Always commit so the OTP record is persisted
-        if otp_code:
-            background_tasks.add_task(send_otp_email, req.email, otp_code, "reset_password")
-        else:
-            logger.warning("Password reset OTP rate-limited for %s", req.email)
-    else:
+    if not user:
         logger.info("Password reset requested for non-existent email: %s", req.email)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No account exists with this email. Please sign up first.",
+        )
 
-    # Always return success to prevent email enumeration
+    otp_code = await create_otp(db, email=req.email, purpose="reset_password", user_id=user.id)
+    await db.commit()  # Always commit so the OTP record is persisted
+    if otp_code:
+        email_sent = await send_otp_email(req.email, otp_code, "reset_password")
+        if not email_sent:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="The reset code could not be sent. Please try again.",
+            )
+    else:
+        logger.warning("Password reset OTP rate-limited for %s", req.email)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many OTP requests. Please try again later.",
+        )
+
     return ApiResponse.ok(
-        data={"message": "If an account with that email exists, a reset code has been sent."}
+        data={"message": "A reset code has been sent."}
     )
 
 
@@ -538,4 +610,3 @@ async def get_profile(user: User = Depends(get_current_user), db: AsyncSession =
             ).model_dump(),
         }
     )
-
