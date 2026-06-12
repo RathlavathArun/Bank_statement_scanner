@@ -45,7 +45,7 @@ async def init_db():
             Statement, Transaction, LedgerMapping, Ledger, AuditLog,
             LLMCache, LLMUsage, BankTemplate, OTP, ExportJob, OtpCode, PasswordResetToken
         )
-        await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=True))
         
         # Lightweight migration to add email_verified if it doesn't exist
         try:

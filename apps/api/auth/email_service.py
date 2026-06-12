@@ -1,12 +1,15 @@
 """
 Email delivery service for OTP codes.
-Supports SMTP (dev/Gmail) and can be extended for AWS SES (production).
+Uses AWS SES in production (when AWS_REGION is set) and falls back to
+SMTP (Gmail) for local development.
+
+AWS IPs are blocked by Gmail SMTP — SES is the correct solution for production.
 """
 import logging
+import os
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-import aiosmtplib
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -63,9 +66,65 @@ def _build_otp_html(otp_code: str, purpose: str) -> str:
     """
 
 
+async def _send_via_ses(to_email: str, subject: str, plain_text: str, html_body: str) -> bool:
+    """Send email using AWS SES (boto3). Used in production on AWS."""
+    try:
+        import boto3
+        from botocore.exceptions import ClientError
+
+        client = boto3.client("ses", region_name=os.environ.get("AWS_DEFAULT_REGION", "ap-south-1"))
+        client.send_email(
+            Source=f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>",
+            Destination={"ToAddresses": [to_email]},
+            Message={
+                "Subject": {"Data": subject, "Charset": "UTF-8"},
+                "Body": {
+                    "Text": {"Data": plain_text, "Charset": "UTF-8"},
+                    "Html": {"Data": html_body, "Charset": "UTF-8"},
+                },
+            },
+        )
+        logger.info("OTP email sent via SES to %s", to_email)
+        return True
+    except Exception:
+        logger.exception("Failed to send OTP email via SES to %s", to_email)
+        return False
+
+
+async def _send_via_smtp(to_email: str, subject: str, plain_text: str, html_body: str) -> bool:
+    """Send email via SMTP. Used for local development."""
+    import aiosmtplib
+
+    msg = MIMEMultipart("alternative")
+    msg["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>"
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(plain_text, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
+
+    try:
+        await aiosmtplib.send(
+            msg,
+            hostname=settings.SMTP_HOST,
+            port=settings.SMTP_PORT,
+            start_tls=True,
+            username=settings.SMTP_USERNAME,
+            password=settings.SMTP_PASSWORD,
+        )
+        logger.info("OTP email sent via SMTP to %s", to_email)
+        return True
+    except Exception:
+        logger.exception("Failed to send OTP email via SMTP to %s", to_email)
+        return False
+
+
 async def send_otp_email(to_email: str, otp_code: str, purpose: str = "verify_email") -> bool:
     """
     Send an OTP code via email.
+
+    - In production (AWS ECS): uses AWS SES — avoids Gmail's block on AWS IPs.
+    - In local development (SMTP credentials set): uses Gmail SMTP.
+    - Fallback: logs OTP to console (dev mode without credentials).
 
     Args:
         to_email: Recipient email address
@@ -80,40 +139,32 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "verify_em
         if purpose == "verify_email"
         else "Password reset code — Bank Statement Scanner"
     )
-
-    msg = MIMEMultipart("alternative")
-    msg["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>"
-    msg["To"] = to_email
-    msg["Subject"] = subject
-
-    # Plain text fallback
     plain_text = (
         f"Your verification code is: {otp_code}\n\n"
         f"This code expires in {settings.OTP_EXPIRY_MINUTES} minutes.\n\n"
         f"If you did not request this, please ignore this email."
     )
-    msg.attach(MIMEText(plain_text, "plain"))
-    msg.attach(MIMEText(_build_otp_html(otp_code, purpose), "html"))
+    html_body = _build_otp_html(otp_code, purpose)
 
-    # In development, if no SMTP credentials are configured, log the OTP instead of sending
+    # ── No credentials at all → log to console (dev fallback) ──
     if not settings.SMTP_USERNAME or not settings.SMTP_PASSWORD:
         logger.warning(
-            "SMTP credentials not configured. OTP for %s (%s): %s",
+            "No SMTP credentials configured. OTP for %s (%s): %s",
             to_email, purpose, otp_code,
         )
         return True
 
-    try:
-        await aiosmtplib.send(
-            msg,
-            hostname=settings.SMTP_HOST,
-            port=settings.SMTP_PORT,
-            start_tls=True,
-            username=settings.SMTP_USERNAME,
-            password=settings.SMTP_PASSWORD,
-        )
-        logger.info("OTP email sent to %s (purpose=%s)", to_email, purpose)
-        return True
-    except Exception:
-        logger.exception("Failed to send OTP email to %s", to_email)
-        return False
+    # ── Production: prefer AWS SES ──────────────────────────────
+    # AWS blocks outbound Gmail SMTP from ECS/EC2 IPs.
+    # Detect we're running on AWS by checking for ECS-injected env vars.
+    running_on_aws = bool(
+        os.environ.get("ECS_CONTAINER_METADATA_URI")
+        or os.environ.get("AWS_EXECUTION_ENV")
+        or os.environ.get("AWS_DEFAULT_REGION")
+    )
+    if running_on_aws:
+        logger.info("Running on AWS — using SES for email delivery")
+        return await _send_via_ses(to_email, subject, plain_text, html_body)
+
+    # ── Local development: use SMTP ─────────────────────────────
+    return await _send_via_smtp(to_email, subject, plain_text, html_body)
