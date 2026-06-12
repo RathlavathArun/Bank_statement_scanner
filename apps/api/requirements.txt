@@ -27,6 +27,7 @@ Pillow>=10.0.0
 opencv-python-headless>=4.8.0
 pdf2image>=1.16.0
 aiosmtplib>=3.0.0
+twilio>=8.0.0
 
 # System Dependencies (Required for OCR and PDF image processing, install via OS package manager):
 # - tesseract (Mac: brew install tesseract, Linux: apt install tesseract-ocr)

@@ -110,6 +110,12 @@ export default function DashboardPage() {
           },
         });
 
+        // Handle 403: email not verified — redirect to verify-email page
+        if (res.status === 403) {
+          router.push("/verify-email");
+          return;
+        }
+
         const data = await readApiResponse(res);
 
         if (data.success) {
@@ -129,6 +135,7 @@ export default function DashboardPage() {
         setLoading(false);
       }
     };
+
 
     fetchUser();
   }, [router]);

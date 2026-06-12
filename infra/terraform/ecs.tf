@@ -245,6 +245,14 @@ resource "aws_ecs_task_definition" "api" {
           value = aws_s3_bucket.documents.bucket
         },
         {
+          name  = "SMTP_USERNAME"
+          value = var.smtp_username
+        },
+        {
+          name  = "SMTP_PASSWORD"
+          value = var.smtp_password
+        },
+        {
           name  = "S3_ENDPOINT"
           value = ""
         },

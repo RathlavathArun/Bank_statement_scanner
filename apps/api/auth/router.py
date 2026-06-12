@@ -90,7 +90,10 @@ async def signup(
 
     # Generate OTP and send verification email
     otp_code = await create_otp(db, email=req.email, purpose="verify_email", user_id=user.id)
-    if otp_code:
+    if otp_code is None:
+        # Rate limited — still create the account but inform the user
+        logger.warning("OTP rate-limited during signup for %s — account created but no email sent", req.email)
+    else:
         background_tasks.add_task(send_otp_email, req.email, otp_code, "verify_email")
 
     # Generate tokens
@@ -267,12 +270,10 @@ async def forgot_password(
 
     if user:
         otp_code = await create_otp(db, email=req.email, purpose="reset_password", user_id=user.id)
+        await db.commit()  # Always commit so the OTP record is persisted
         if otp_code:
-            await db.commit()
             background_tasks.add_task(send_otp_email, req.email, otp_code, "reset_password")
         else:
-            # Rate limited — commit anyway to save the state
-            await db.commit()
             logger.warning("Password reset OTP rate-limited for %s", req.email)
     else:
         logger.info("Password reset requested for non-existent email: %s", req.email)
@@ -452,7 +453,7 @@ async def login_phone_verify(req: PhoneLoginVerifyRequest, db: AsyncSession = De
             phone=req.phone,
             password_hash=hash_password(str(random.randint(10000000, 99999999))), # Random placeholder password
             full_name=f"User {req.phone}",
-            email_verified=False
+            email_verified=True  # Phone OTP login counts as identity verification
         )
         db.add(user)
         await db.flush()
@@ -469,6 +470,10 @@ async def login_phone_verify(req: PhoneLoginVerifyRequest, db: AsyncSession = De
         )
         db.add(membership)
         await db.flush()
+    else:
+        # Existing phone users who log in via OTP are also considered verified
+        if not user.email_verified:
+            user.email_verified = True
     
     # Get user's firm
     membership_result = await db.execute(
@@ -497,69 +502,6 @@ async def login_phone_verify(req: PhoneLoginVerifyRequest, db: AsyncSession = De
     )
 
 
-@router.post("/password/forgot/request")
-async def password_forgot_request(req: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
-    """Generate and send OTP to email for password reset."""
-    user_result = await db.execute(select(User).where(User.email == req.email))
-    user = user_result.scalar_one_or_none()
-    
-    if not user:
-        # Do not leak whether email exists. Just return OK.
-        return ApiResponse.ok(message="If the email is registered, an OTP will be sent.")
-        
-    await db.execute(delete(OTP).where(OTP.identifier == req.email, OTP.purpose == "reset"))
-    
-    otp_code = str(random.randint(100000, 999999))
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
-    
-    otp_entry = OTP(
-        identifier=req.email,
-        otp_code=otp_code,
-        purpose="reset",
-        expires_at=expires_at
-    )
-    db.add(otp_entry)
-    await db.flush()
-    
-    # In production, send email via SendGrid, SES, etc.
-    print(f"\n[DEV MOCK EMAIL] Reset OTP for {req.email} is: {otp_code}\n")
-    
-    return ApiResponse.ok(message="If the email is registered, an OTP will be sent.")
-
-
-@router.post("/password/forgot/verify")
-async def password_forgot_verify(req: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
-    """Verify OTP and update password."""
-    result = await db.execute(
-        select(OTP).where(
-            OTP.identifier == req.email,
-            OTP.purpose == "reset",
-            OTP.otp_code == req.otp
-        )
-    )
-    otp_entry = result.scalar_one_or_none()
-    
-    if not otp_entry:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP")
-        
-    if otp_entry.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
-        await db.execute(delete(OTP).where(OTP.id == otp_entry.id))
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP expired")
-        
-    # Valid OTP
-    user_result = await db.execute(select(User).where(User.email == req.email))
-    user = user_result.scalar_one_or_none()
-    
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-        
-    # Update password
-    user.password_hash = hash_password(req.new_password)
-    
-    # Clean up OTP
-    await db.execute(delete(OTP).where(OTP.id == otp_entry.id))
-    
-    return ApiResponse.ok(message="Password reset successfully")
 
 @router.get("/me")
 async def get_profile(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):

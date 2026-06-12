@@ -23,6 +23,19 @@ variable "db_password" {
   default     = "bse_secret_2026"
 }
 
+variable "smtp_username" {
+  description = "SMTP Username for sending emails"
+  type        = string
+  default     = ""
+}
+
+variable "smtp_password" {
+  description = "SMTP Password for sending emails"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 variable "vpc_cidr" {
   description = "CIDR block for the VPC"
   type        = string

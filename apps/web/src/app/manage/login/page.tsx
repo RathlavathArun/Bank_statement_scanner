@@ -31,8 +31,12 @@ export default function LoginPage() {
 
       if (res.ok && data.success) {
         localStorage.setItem("access_token", data.data.tokens.access_token);
-        localStorage.setItem("admin_verified", "true");
-        router.push("/manage");
+        if (data.data.user?.email_verified === false) {
+          router.push(`/verify-email?email=${encodeURIComponent(email as string)}`);
+        } else {
+          localStorage.setItem("admin_verified", "true");
+          router.push("/manage");
+        }
       } else {
         setError(data.detail || data.error || data.message || "Login failed");
       }
