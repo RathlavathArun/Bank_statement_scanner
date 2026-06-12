@@ -1,6 +1,6 @@
 "use client";
 
-import { ComponentType, ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { ComponentType, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 
@@ -9,7 +9,7 @@ type PDFViewerProps = {
 };
 
 type DocumentProps = {
-  file: string;
+  file: string | { url: string; httpHeaders?: Record<string, string> };
   loading: ReactNode;
   error: ReactNode;
   onLoadError?: () => void;
@@ -50,6 +50,16 @@ export function PDFViewer({ fileUrl }: PDFViewerProps) {
   const [passwordError, setPasswordError] = useState(false);
   const passwordCallbackRef = useRef<((password: string) => void) | null>(null);
   const passwordInputRef = useRef<HTMLInputElement | null>(null);
+  const authHeader = useMemo(() => {
+    const token = typeof window !== "undefined"
+      ? localStorage.getItem("access_token") || localStorage.getItem("token")
+      : null;
+    return token ? { Authorization: `Bearer ${token}` } : undefined;
+  }, []);
+  const pdfFile = useMemo(
+    () => authHeader ? { url: fileUrl, httpHeaders: authHeader } : fileUrl,
+    [authHeader, fileUrl]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -57,7 +67,10 @@ export function PDFViewer({ fileUrl }: PDFViewerProps) {
     const loadRenderer = async () => {
       try {
         const mod = await import("react-pdf");
-        mod.pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${mod.pdfjs.version}/build/pdf.worker.min.mjs`;
+        mod.pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+          "pdfjs-dist/build/pdf.worker.min.mjs",
+          import.meta.url
+        ).toString();
         if (!cancelled) {
           setReactPdf(mod as ReactPdfModule);
         }
@@ -107,6 +120,26 @@ export function PDFViewer({ fileUrl }: PDFViewerProps) {
     setViewerError(true);
   };
 
+  const downloadFile = useCallback(async () => {
+    try {
+      const res = await fetch(fileUrl, {
+        headers: authHeader,
+      });
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = "statement.pdf";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      setViewerError(true);
+    }
+  }, [authHeader, fileUrl]);
+
   const loading = (
     <div className="space-y-2 p-4">
       {Array.from({ length: 8 }).map((_, index) => (
@@ -118,9 +151,9 @@ export function PDFViewer({ fileUrl }: PDFViewerProps) {
   const fallback = (
     <div className="flex min-h-[320px] flex-col items-center justify-center text-center">
       <p className="mb-4 text-red-300">PDF preview not available</p>
-      <a className="text-blue-300 underline" href={fileUrl} download>
+      <button type="button" className="text-blue-300 underline" onClick={downloadFile}>
         Download file
-      </a>
+      </button>
     </div>
   );
 
@@ -174,7 +207,7 @@ export function PDFViewer({ fileUrl }: PDFViewerProps) {
           viewerError ? fallback : loading
         ) : (
           <Document
-            file={fileUrl}
+            file={pdfFile}
             loading={loading}
             error={fallback}
             onLoadError={() => setViewerError(true)}

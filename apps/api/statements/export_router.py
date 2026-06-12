@@ -85,6 +85,45 @@ async def _load_transactions(db: AsyncSession, statement_id: str) -> list[Transa
     return list(result.scalars().all())
 
 
+async def _build_export_content(
+    db: AsyncSession,
+    stmt: Statement,
+    fmt: str,
+    company_name: str | None = None,
+    bank_ledger_name: str | None = None,
+    strict_reviewed_only: bool = False,
+) -> tuple[bytes, int]:
+    transactions = [_serialize_transaction(tx) for tx in await _load_transactions(db, stmt.id)]
+    statement_meta = _statement_meta(stmt)
+
+    if fmt == "tally_xml":
+        content: bytes | str = generate_tally_xml(
+            transactions,
+            company_name=company_name or "My Company",
+            bank_ledger_name=bank_ledger_name or "Bank Account",
+            strict_reviewed_only=strict_reviewed_only,
+        )
+    elif fmt == "csv":
+        content = generate_csv(transactions)
+    elif fmt == "excel":
+        content = generate_excel(transactions, statement_meta)
+    elif fmt == "json":
+        content = generate_json(transactions, statement_meta)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown format: {fmt}")
+
+    payload = content if isinstance(content, bytes) else content.encode("utf-8")
+    return payload, len(transactions)
+
+
+def _write_export_file(statement_id: str, job_id: str, fmt: str, payload: bytes) -> Path:
+    export_dir = EXPORTS_DIR / statement_id
+    export_dir.mkdir(parents=True, exist_ok=True)
+    file_path = export_dir / f"{job_id}.{FORMAT_EXT[fmt]}"
+    file_path.write_bytes(payload)
+    return file_path
+
+
 @export_router.post("/v1/statements/{statement_id}/export", response_model=ExportJobResponse)
 async def create_export(
     statement_id: str,
@@ -111,19 +150,24 @@ async def create_export(
     )
     existing_job = existing_result.scalar_one_or_none()
     if existing_job:
-        tx_count = (await db.execute(select(Transaction).where(Transaction.statement_id == statement_id))).scalars().all()
-        return ExportJobResponse(
-            export_id=existing_job.id,
-            statement_id=statement_id,
-            format=existing_job.format,
-            status=existing_job.status,
-            download_url=existing_job.download_url,
-            filename=_make_filename(stmt, existing_job.format),
-            expires_at=existing_job.expires_at,
-            created_at=existing_job.created_at,
-            transaction_count=len(tx_count),
-            idempotent=True,
-        )
+        if not existing_job.file_path or not os.path.exists(existing_job.file_path):
+            existing_job.status = "FAILED"
+            existing_job.error_message = "Export file was missing on disk; regenerating."
+            await db.flush()
+        else:
+            tx_count = (await db.execute(select(Transaction).where(Transaction.statement_id == statement_id))).scalars().all()
+            return ExportJobResponse(
+                export_id=existing_job.id,
+                statement_id=statement_id,
+                format=existing_job.format,
+                status=existing_job.status,
+                download_url=existing_job.download_url,
+                filename=_make_filename(stmt, existing_job.format),
+                expires_at=existing_job.expires_at,
+                created_at=existing_job.created_at,
+                transaction_count=len(tx_count),
+                idempotent=True,
+            )
 
     job = ExportJob(
         statement_id=statement_id,
@@ -135,25 +179,15 @@ async def create_export(
     db.add(job)
     await db.flush()
 
-    transactions = [_serialize_transaction(tx) for tx in await _load_transactions(db, statement_id)]
-    statement_meta = _statement_meta(stmt)
-
     try:
-        if body.format == "tally_xml":
-            content: bytes | str = generate_tally_xml(
-                transactions,
-                company_name=body.company_name or "My Company",
-                bank_ledger_name=body.bank_ledger_name or "Bank Account",
-                strict_reviewed_only=body.strict_reviewed_only,
-            )
-        elif body.format == "csv":
-            content = generate_csv(transactions)
-        elif body.format == "excel":
-            content = generate_excel(transactions, statement_meta)
-        elif body.format == "json":
-            content = generate_json(transactions, statement_meta)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown format: {body.format}")
+        payload, transaction_count = await _build_export_content(
+            db=db,
+            stmt=stmt,
+            fmt=body.format,
+            company_name=body.company_name,
+            bank_ledger_name=body.bank_ledger_name,
+            strict_reviewed_only=body.strict_reviewed_only,
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -162,12 +196,7 @@ async def create_export(
         await db.commit()
         raise HTTPException(status_code=500, detail=f"Export generation failed: {exc}") from exc
 
-    export_dir = EXPORTS_DIR / statement_id
-    export_dir.mkdir(parents=True, exist_ok=True)
-    ext = FORMAT_EXT[body.format]
-    file_path = export_dir / f"{job.id}.{ext}"
-    payload = content if isinstance(content, bytes) else content.encode("utf-8")
-    file_path.write_bytes(payload)
+    file_path = _write_export_file(statement_id, job.id, body.format, payload)
 
     expires_at = utcnow() + timedelta(hours=EXPORT_TTL_HOURS)
     job.status = "READY"
@@ -188,7 +217,7 @@ async def create_export(
         filename=_make_filename(stmt, job.format),
         expires_at=job.expires_at,
         created_at=job.created_at,
-        transaction_count=len(transactions),
+        transaction_count=transaction_count,
         idempotent=False,
     )
 
@@ -239,10 +268,28 @@ async def download_export(
         raise HTTPException(status_code=409, detail=f"Export not ready. Status: {job.status}")
     if job.expires_at and job.expires_at < utcnow():
         raise HTTPException(status_code=410, detail="Export link has expired")
-    if not job.file_path or not os.path.exists(job.file_path):
-        raise HTTPException(status_code=404, detail="Export file not found on disk")
 
     stmt = await db.get(Statement, job.statement_id)
+    if not stmt:
+        raise HTTPException(status_code=404, detail="Statement not found")
+
+    if not job.file_path or not os.path.exists(job.file_path):
+        try:
+            payload, _ = await _build_export_content(
+                db=db,
+                stmt=stmt,
+                fmt=job.format,
+                company_name=job.company_name,
+                bank_ledger_name=job.bank_ledger,
+            )
+            file_path = _write_export_file(job.statement_id, job.id, job.format, payload)
+            job.file_path = str(file_path)
+            job.expires_at = utcnow() + timedelta(hours=EXPORT_TTL_HOURS)
+            await db.commit()
+            await db.refresh(job)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Export file regeneration failed: {exc}") from exc
+
     filename = _make_filename(stmt, job.format)
     return FileResponse(
         path=job.file_path,

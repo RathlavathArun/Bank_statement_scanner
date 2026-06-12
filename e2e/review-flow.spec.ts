@@ -18,6 +18,12 @@ test.beforeEach(async ({ page }) => {
   });
 
   await page.route("**/api/v1/statements?page=1&size=20", async (route) => {
+    if (route.request().method() === "DELETE") {
+      expect(route.request().headers().authorization).toBe("Bearer e2e-token");
+      await route.fulfill({ status: 204 });
+      return;
+    }
+
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
@@ -116,6 +122,16 @@ test.beforeEach(async ({ page }) => {
       body: JSON.stringify([]),
     });
   });
+
+  await page.route(`**/api/v1/statements/${statementId}`, async (route) => {
+    if (route.request().method() === "DELETE") {
+      expect(route.request().headers().authorization).toBe("Bearer e2e-token");
+      await route.fulfill({ status: 204 });
+      return;
+    }
+
+    await route.fallback();
+  });
 });
 
 test("opens review UI and edits a transaction", async ({ page }) => {
@@ -173,4 +189,17 @@ test("downloads exports with the auth token", async ({ page }) => {
   const download = await downloadPromise;
 
   expect(download.suggestedFilename()).toBe("hdfc_2026-06-12_csv.csv");
+});
+
+test("deletes a statement with the auth token", async ({ page }) => {
+  page.on("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("Delete this statement?");
+    await dialog.accept();
+  });
+
+  await page.goto("/dashboard");
+  await expect(page.getByText("sample-hdfc-statement.csv")).toBeVisible();
+  await page.getByRole("button", { name: "Delete statement" }).click();
+
+  await expect(page.getByText("sample-hdfc-statement.csv")).toBeHidden();
 });

@@ -75,6 +75,11 @@ async function readApiResponse(res: Response) {
   }
 }
 
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem("access_token") || localStorage.getItem("token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export default function DashboardPage() {
   const router = useRouter();
 
@@ -171,7 +176,9 @@ export default function DashboardPage() {
   }, []);
 
   const fetchResult = useCallback(async (statementId: string) => {
-    const res = await fetch(`${API}/v1/statements/${statementId}/result`);
+    const res = await fetch(`${API}/v1/statements/${statementId}/result`, {
+      headers: authHeaders(),
+    });
     const data = await res.json();
 
     if (data.success) {
@@ -183,7 +190,8 @@ export default function DashboardPage() {
     if (!uploadedStatementId) return;
 
     const res = await fetch(
-      `${API}/v1/statements/${uploadedStatementId}/status`
+      `${API}/v1/statements/${uploadedStatementId}/status`,
+      { headers: authHeaders() }
     );
 
     const data = await res.json();
@@ -224,18 +232,12 @@ export default function DashboardPage() {
 const handleDelete = async (statementId: string) => {
   if (!confirm("Delete this statement?")) return;
 
-  const token =
-    localStorage.getItem("access_token") ||
-    localStorage.getItem("token");
-
   try {
     const res = await fetch(
       `${API}/v1/statements/${statementId}`,
       {
         method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: authHeaders(),
       }
     );
 
@@ -542,53 +544,41 @@ const handleDelete = async (statementId: string) => {
                       )}
                       {stmt.status === "OCR" ? "OCR Processing" : stmt.status}
                     </span>
-                    {stmt.status === "REVIEWED" ? (
+                    <div className="flex items-center gap-2">
                       <Link
                         href={`/dashboard/review/${stmt.id}`}
                         data-testid={`review-button-${stmt.id}`}
-                        className="px-3 py-1 rounded-lg text-xs bg-slate-200 hover:bg-slate-300
-                                 text-slate-500 dark:bg-slate-700 dark:text-slate-400 dark:hover:bg-slate-600
-                                 font-medium transition-all w-fit flex items-center gap-1"
-                        title="This statement is reviewed. You can view it in read-only mode."
+                        className={`px-3 py-1 rounded-lg text-xs font-medium transition-all w-fit ${
+                          stmt.status === "REVIEWED" || stmt.status === "EXPORTED"
+                            ? "bg-slate-200 hover:bg-slate-300 text-slate-500 dark:bg-slate-700 dark:text-slate-400 dark:hover:bg-slate-600"
+                            : "bg-purple-600 hover:bg-purple-500 text-white"
+                        }`}
                       >
-                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                        View
+                        {stmt.status === "REVIEWED" || stmt.status === "EXPORTED" ? "View" : "Review ->"}
                       </Link>
-                   ) : stmt.status === "READY_FOR_REVIEW" || stmt.file_type?.toLowerCase() === "pdf" ? (
-  <div className="flex items-center gap-2">
-    <Link
-      href={`/dashboard/review/${stmt.id}`}
-      data-testid={`review-button-${stmt.id}`}
-      className="px-3 py-1 rounded-lg text-xs bg-purple-600 hover:bg-purple-500
-               text-white font-medium transition-all w-fit"
-    >
-      Review →
-    </Link>
 
-    <button
-  onClick={() => handleDelete(stmt.id)}
-  title="Delete statement"
-  className="p-2 rounded-md border border-red-300 text-red-600 hover:bg-red-50"
->
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    className="h-4 w-4"
-    fill="none"
-    viewBox="0 0 24 24"
-    stroke="currentColor"
-  >
-    <path
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth={2}
-      d="M19 7L18.133 19.142A2 2 0 0116.138 21H7.862A2 2 0 015.867 19.142L5 7m5 4v6m4-6v6M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3m-7 0h8"
-    />
-  </svg>
-</button>
-  </div>
-) : (
-  <span className="text-xs text-slate-500">—</span>
-)}
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(stmt.id)}
+                        title="Delete statement"
+                        className="p-2 rounded-md border border-red-300 text-red-600 hover:bg-red-50"
+                      >
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          className="h-4 w-4"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M19 7L18.133 19.142A2 2 0 0116.138 21H7.862A2 2 0 015.867 19.142L5 7m5 4v6m4-6v6M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3m-7 0h8"
+                          />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                 ))}
 

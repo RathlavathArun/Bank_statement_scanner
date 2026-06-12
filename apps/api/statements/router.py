@@ -5,12 +5,12 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, Query, status
-from fastapi.responses import FileResponse
-from sqlalchemy import select, func
+from fastapi.responses import FileResponse, Response
+from sqlalchemy import delete, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.database import get_db
-from db.models import Client, Firm, FirmMember, LLMCache, Statement, Transaction, User
+from db.models import Client, ExportJob, Firm, FirmMember, LLMCache, LLMUsage, Statement, Transaction, User
 from auth.dependencies import get_current_user
 from fastapi.concurrency import run_in_threadpool
 import logging
@@ -772,6 +772,41 @@ async def update_statement_status(
             "status": stmt.status,
         }
     }
+
+
+@router.delete("/{statement_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_statement(
+    statement_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a statement, its extracted rows, export records, and local files."""
+    stmt = await verify_statement_access(db, statement_id, current_user)
+
+    paths_to_delete: list[Path] = []
+    if stmt.file_url:
+        paths_to_delete.append(Path(stmt.file_url))
+
+    export_result = await db.execute(
+        select(ExportJob.file_path).where(
+            ExportJob.statement_id == statement_id,
+            ExportJob.file_path.is_not(None),
+        )
+    )
+    paths_to_delete.extend(Path(path) for path in export_result.scalars().all() if path)
+
+    await db.execute(delete(LLMUsage).where(LLMUsage.statement_id == statement_id))
+    await db.delete(stmt)
+    await db.commit()
+
+    for path in paths_to_delete:
+        try:
+            if path.exists() and path.is_file():
+                path.unlink()
+        except OSError as exc:
+            logger.warning("Could not delete statement file %s: %s", path, exc)
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{statement_id}/file", response_class=FileResponse)
