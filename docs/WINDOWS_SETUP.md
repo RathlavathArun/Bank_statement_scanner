@@ -1,389 +1,372 @@
 # 🪟 Windows Developer Walkthrough
-## Bank Statement Scanner — Start to Finish on Windows
+## Bank Statement Scanner — Pull → Edit → Deploy → Verify
 
-> **Who this is for**: A developer on Windows who has just pulled the project
-> from GitHub and wants to run it locally for development.
->
-> **What you'll have running by the end**:
-> - PostgreSQL, Redis, MinIO (S3), Qdrant — all via Docker
-> - FastAPI backend on `http://localhost:8000`
-> - Next.js frontend on `http://localhost:3000`
+> **Goal**: Make a code change on Windows, deploy it to AWS, and see it live
+> on the production URL. No local server needed.
 
 ---
 
-## What You Need First
+## What You'll Have at the End
 
-Before touching the project, install these tools. Skip any you already have.
+```
+Your Windows Machine
+      │
+      │  git clone → edit code → run .\infra\deploy.ps1
+      │
+      ▼
+AWS ECS Fargate (already running)
+  ├── API  → http://<ALB_DNS>/docs
+  └── Web  → http://<ALB_DNS>
+```
 
-| Tool | Download | Why |
-|------|----------|-----|
-| Git | https://git-scm.com/download/win | Clone the repo |
-| Python 3.11+ | https://www.python.org/downloads/ | Backend API |
-| Node.js 20 LTS | https://nodejs.org/ | Frontend |
-| Docker Desktop | https://www.docker.com/products/docker-desktop/ | Databases |
-| VS C++ Build Tools | https://visualstudio.microsoft.com/visual-cpp-build-tools/ | Compile Python packages |
-| Tesseract OCR | https://github.com/UB-Mannheim/tesseract/wiki | OCR for scanned PDFs |
-| Poppler | https://github.com/oschwartz10612/poppler-windows/releases | PDF-to-image conversion |
-
-> ⚠️ **Do all installs before moving on.** Skipping any one of them will cause
-> errors later in the guide.
-
----
-
-## Part 1 — One-Time System Setup
-
-### 1.1 — Install Visual C++ Build Tools
-
-1. Go to https://visualstudio.microsoft.com/visual-cpp-build-tools/
-2. Click **Download Build Tools**
-3. Run the installer
-4. In the workloads screen, tick **"Desktop development with C++"**
-5. Click **Install** (≈ 6 GB download)
-6. **Restart your PC** after it finishes
-
-> This is needed so `pip` can compile `argon2-cffi` (the password hashing library).
+The existing AWS infrastructure (ECS, RDS, Redis, S3, ECR) is already provisioned
+via Terraform. You just build Docker images, push them to ECR, and force a new
+ECS deployment.
 
 ---
 
-### 1.2 — Install Tesseract OCR
+## Part 1 — One-Time Prerequisites
 
-1. Go to https://github.com/UB-Mannheim/tesseract/wiki
-2. Download `tesseract-ocr-w64-setup-5.x.x.exe` (latest stable)
-3. Run the installer — use the default path:
-   ```
-   C:\Program Files\Tesseract-OCR\
-   ```
-4. **Add to PATH:**
-   - Press `Win + S` → search **"Edit the system environment variables"**
-   - Click **Environment Variables**
-   - Under **System variables**, select `Path` → click **Edit**
-   - Click **New** → paste:
-     ```
-     C:\Program Files\Tesseract-OCR
-     ```
-   - Click **OK** on all dialogs
-5. Open a **new** PowerShell window and verify:
+Install these tools once. Skip any you already have.
+
+### 1.1 — Git
+
+1. Download: https://git-scm.com/download/win
+2. Run installer — accept all defaults
+3. Verify:
    ```powershell
-   tesseract --version
+   git --version
    ```
-   You should see version output like `tesseract 5.x.x`
 
 ---
 
-### 1.3 — Install Poppler
+### 1.2 — VS Code (Code Editor)
 
-1. Go to https://github.com/oschwartz10612/poppler-windows/releases
-2. Download the latest `Release-xx.xx.x-0.zip`
-3. Extract it to:
-   ```
-   C:\poppler\
-   ```
-   (so the path `C:\poppler\Library\bin\pdfinfo.exe` exists)
-4. **Add to PATH** (same steps as above):
-   - Add:
-     ```
-     C:\poppler\Library\bin
-     ```
-5. Open a **new** PowerShell window and verify:
+1. Download: https://code.visualstudio.com/
+2. Run installer
+3. Recommended extensions (install from VS Code's Extensions panel):
+   - **Python** (ms-python.python)
+   - **ESLint** (dbaeumer.vscode-eslint)
+   - **Prettier** (esbenp.prettier-vscode)
+
+---
+
+### 1.3 — AWS CLI
+
+1. Download: https://awscli.amazonaws.com/AWSCLIV2.msi
+2. Run the installer
+3. Verify:
    ```powershell
-   pdfinfo --version
+   aws --version
    ```
 
 ---
 
-### 1.4 — Install Docker Desktop
+### 1.4 — Docker Desktop
 
-1. Download from https://www.docker.com/products/docker-desktop/
-2. Run the installer — accept defaults
-3. When it asks, enable **WSL 2 backend** (recommended)
-4. After install, **start Docker Desktop** from the Start Menu
-5. Wait until the whale icon in the taskbar shows **"Docker Desktop is running"**
-6. Verify:
+Docker Desktop is used to **build** the images locally before pushing to AWS ECR.
+You do NOT need to run any containers locally for development.
+
+1. Download: https://www.docker.com/products/docker-desktop/
+2. Run installer — enable **WSL 2 backend** when prompted
+3. After install, **launch Docker Desktop** from the Start Menu
+4. Wait for the whale icon in the taskbar to show **"Docker Desktop is running"**
+5. Verify:
    ```powershell
    docker --version
-   docker compose version
+   ```
+
+> ⚠️ Docker Desktop must be **running** every time you deploy. If it's not
+> running, the `docker build` step will fail.
+
+---
+
+### 1.5 — Python 3
+
+Needed by the deploy script to manipulate ECS task definition JSON.
+
+1. Download: https://www.python.org/downloads/ (Python 3.11 or later)
+2. During install, **tick "Add python.exe to PATH"**
+3. Verify:
+   ```powershell
+   python --version
    ```
 
 ---
 
-## Part 2 — Clone the Repo
+## Part 2 — Configure AWS Credentials
 
-Open **PowerShell** (right-click Start → "Windows PowerShell"):
+You need AWS credentials with permissions to push to ECR and update ECS.
+
+Ask the project owner for an **IAM Access Key** (Access Key ID + Secret Access Key).
 
 ```powershell
-# Navigate to where you want the project
-cd C:\Projects   # or wherever you like
+aws configure
+```
+
+You'll be prompted for:
+```
+AWS Access Key ID:     <paste your Access Key ID>
+AWS Secret Access Key: <paste your Secret Access Key>
+Default region name:   ap-south-1
+Default output format: json
+```
+
+Verify it works:
+```powershell
+aws sts get-caller-identity
+```
+
+You should see your account ID and user ARN. If you see an error, your credentials
+are wrong — double-check with the project owner.
+
+---
+
+## Part 3 — Clone the Repository
+
+```powershell
+# Go to your preferred folder
+cd C:\Projects   # create this folder first if it doesn't exist: mkdir C:\Projects
 
 # Clone
 git clone https://github.com/RathlavathArun/Bank_statement_scanner.git
 
-# Enter the project folder
+# Enter the project
 cd Bank_statement_scanner
-```
 
-> ✅ The repo has a `.gitattributes` file that automatically ensures all files
-> have correct LF line endings on Windows — no manual intervention needed.
+# Open in VS Code
+code .
+```
 
 ---
 
-## Part 3 — Start the Databases (Docker Compose)
+## Part 4 — Understand the Project Structure
 
-The project uses PostgreSQL, Redis, MinIO, and Qdrant. Docker Compose starts all
-of them with a single command.
-
-```powershell
-# From the repo root
-cd infra
-docker compose up -d
 ```
-
-Expected output (first time downloads images — may take a few minutes):
+Bank_statement_scanner/
+├── apps/
+│   ├── api/          ← Python FastAPI backend (port 8000 on AWS)
+│   │   ├── main.py
+│   │   ├── statements/
+│   │   │   ├── router.py       ← API endpoints
+│   │   │   ├── parser.py       ← PDF/Excel parsing logic
+│   │   │   └── ocr_worker.py   ← OCR for scanned PDFs
+│   │   ├── auth/               ← Login/signup logic
+│   │   └── db/                 ← Database models
+│   │
+│   └── web/          ← Next.js frontend (port 3000 on AWS)
+│       └── src/app/
+│           ├── dashboard/page.tsx   ← Main dashboard
+│           ├── login/page.tsx       ← Login page
+│           └── signup/page.tsx      ← Signup page
+│
+├── packages/
+│   └── bank-templates/   ← YAML configs for each bank (HDFC, ICICI, etc.)
+│
+├── infra/
+│   ├── deploy.ps1        ← 🪟 Windows: deploy BOTH API + Web
+│   ├── deploy.sh         ← 🍎 macOS/Linux: deploy BOTH API + Web
+│   └── terraform/        ← AWS infrastructure (already provisioned, don't touch)
+│
+└── deploy_api.ps1        ← 🪟 Windows: deploy API only (faster)
 ```
-✔ Container bse_postgres   Started
-✔ Container bse_redis      Started
-✔ Container bse_qdrant     Started
-✔ Container bse_minio      Started
-✔ Container bse_prometheus Started
-✔ Container bse_grafana    Started
-```
-
-Verify everything is healthy:
-```powershell
-docker compose ps
-```
-
-All containers should show `running` or `healthy`. If any show `Exit`, check logs:
-```powershell
-docker compose logs postgres
-```
-
-> **Ports used**: 5432 (Postgres), 6379 (Redis), 9000–9001 (MinIO), 6333 (Qdrant),
-> 9090 (Prometheus), 3001 (Grafana). Make sure none are blocked by another app.
 
 ---
 
-## Part 4 — Backend Setup (FastAPI)
+## Part 5 — Make a Code Change
 
-Open a **new PowerShell window** (keep the first one with Docker running).
+Edit whatever you need. Here are the most common files:
 
-```powershell
-# From repo root
-cd apps\api
+| What you want to change | File to edit |
+|------------------------|--------------|
+| API endpoint logic | `apps/api/statements/router.py` |
+| PDF parsing | `apps/api/statements/parser.py` |
+| Dashboard UI | `apps/web/src/app/dashboard/page.tsx` |
+| Login / Signup page | `apps/web/src/app/login/page.tsx` |
+| Bank template (HDFC etc) | `packages/bank-templates/hdfc.yaml` |
+
+**Example**: Add a comment to confirm your change works end-to-end:
+
+Open `apps/api/main.py` in VS Code and change the root response:
+```python
+@app.get("/", tags=["System"])
+async def root():
+    return ApiResponse.ok(
+        data={
+            "service": "Bank Statement Extraction API",
+            "version": "0.1.0",
+            "docs": "/docs",
+            "deployed_by": "Windows Dev - your name here",  # ← add this
+        }
+    )
 ```
 
-### 4.1 — Create a Virtual Environment
-
-```powershell
-python -m venv venv
-```
-
-### 4.2 — Activate It
-
-```powershell
-venv\Scripts\activate
-```
-
-Your prompt should now show `(venv)` at the start:
-```
-(venv) PS C:\Projects\Bank_statement_scanner\apps\api>
-```
-
-> If you get an error about script execution policy, run this first:
-> ```powershell
-> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-> ```
-> Then try activating again.
-
-### 4.3 — Install Python Dependencies
-
-```powershell
-pip install -r requirements.txt
-```
-
-This takes 2–4 minutes the first time. You'll see it download and compile packages.
-If `argon2-cffi` fails, it means Visual C++ Build Tools aren't installed correctly
-— go back to step 1.1.
-
-### 4.4 — Create the `.env` File
-
-The API needs environment variables. Copy the example:
-
-```powershell
-copy .env.example .env
-```
-
-Then open `.env` in any text editor (e.g. Notepad):
-```powershell
-notepad .env
-```
-
-Update or confirm these values for local development:
-```env
-DATABASE_URL=sqlite+aiosqlite:///./bank_statements.db
-REDIS_URL=redis://localhost:6379/0
-S3_ENDPOINT=http://localhost:9000
-S3_ACCESS_KEY=minioadmin
-S3_SECRET_KEY=minioadmin123
-S3_BUCKET=bank-statements
-JWT_SECRET_KEY=change-this-to-any-long-random-string
-API_HOST=127.0.0.1
-API_PORT=8000
-DEBUG=True
-CORS_ORIGINS=http://localhost:3000
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USERNAME=your-email@gmail.com
-SMTP_PASSWORD=your-app-password
-SMTP_FROM_EMAIL=your-email@gmail.com
-```
-
-> For local dev, the SMTP fields can be dummy values — email sending will just
-> silently fail, which is fine for testing.
-
-### 4.5 — Start the API
-
-```powershell
-python main.py
-```
-
-Expected output:
-```
-[START] Starting Bank Statement Extraction API...
-[OK] Database tables created / verified
-[OK] Template manager initialized with hot-reload support
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-```
-
-✅ **API is running.** Open http://localhost:8000/docs in your browser — you should
-see the interactive Swagger UI.
+Save the file (`Ctrl + S`).
 
 ---
 
-## Part 5 — Frontend Setup (Next.js)
+## Part 6 — Deploy to AWS
 
-Open a **third PowerShell window**.
+Open **PowerShell** from the repo root folder.
 
-```powershell
-# From repo root
-cd apps\web
-```
+> Make sure **Docker Desktop is running** before this step.
 
-### 5.1 — Install Node Dependencies
+### Option A — Deploy Everything (API + Web)
 
-```powershell
-npm install
-```
-
-Takes about 1–2 minutes.
-
-### 5.2 — Start the Dev Server
+Use this when you've changed both the frontend and backend, or aren't sure:
 
 ```powershell
-npm run dev
+.\infra\deploy.ps1
 ```
 
-Expected output:
-```
-▲ Next.js 16.x.x
-- Local:        http://localhost:3000
-- Network:      http://0.0.0.0:3000
+This runs through 6 steps:
+1. Checks AWS credentials and Docker
+2. Logs in to AWS ECR (Docker registry)
+3. Builds the API Docker image and pushes it
+4. Builds the Web Docker image and pushes it
+5. Registers new ECS task definitions
+6. Forces new ECS deployments + waits for them to go stable
 
-✓ Starting...
-✓ Ready in 2.3s
-```
-
-✅ **Frontend is running.** Open http://localhost:3000 in your browser.
+**Total time**: ~8–12 minutes
 
 ---
 
-## Part 6 — Verify Everything Works
+### Option B — Deploy API Only (Faster)
 
-Open http://localhost:3000 in your browser.
+Use this when you've only changed backend code (`apps/api/`):
 
-1. **Sign Up** — create a new account
-2. **Check your email** for the verification link (or check API logs if SMTP isn't set up)
-3. **Log in** → you should land on the dashboard
-4. **Upload a bank statement** (PDF or Excel)
-5. The statement should appear in the table with status `PARSING` → `READY_FOR_REVIEW`
-6. Click **Review →** to see extracted transactions
+```powershell
+.\deploy_api.ps1
+```
+
+**Total time**: ~4–6 minutes
 
 ---
 
-## Quick Reference — Starting the Project Every Day
+### What the output looks like
 
-Once everything is set up, you only need these commands each time:
-
-```powershell
-# Terminal 1 — Databases
-cd C:\Projects\Bank_statement_scanner\infra
-docker compose up -d
-
-# Terminal 2 — API
-cd C:\Projects\Bank_statement_scanner\apps\api
-venv\Scripts\activate
-python main.py
-
-# Terminal 3 — Frontend
-cd C:\Projects\Bank_statement_scanner\apps\web
-npm run dev
+```
+[DEPLOY] Pre-flight checks...
+[  OK  ] All tools found. AWS Account: 911229172121
+[DEPLOY] --- Step 3/6: ECR Docker Login ---
+[  OK  ] Logged in to ECR
+[DEPLOY] --- Step 4/6: Build & Push API Image ---
+[DEPLOY] Building API image (tag: 20260613-101523)...
+ => [1/5] FROM python:3.12-slim
+ => [2/5] RUN apt-get install tesseract-ocr poppler-utils ...
+ => [3/5] COPY requirements.txt .
+ => [4/5] RUN pip install -r requirements.txt
+ => [5/5] COPY . .
+[  OK  ] API image pushed
+[DEPLOY] --- Step 6/6: Deploy to ECS ---
+[DEPLOY] Waiting for ECS services to stabilize...
+[  OK  ] ECS services are stable
+================================================================
+  Deployment Complete!
+================================================================
+  Web App:    http://bank-statement-alb-xxxxxxx.ap-south-1.elb.amazonaws.com
+  API Health: http://bank-statement-alb-xxxxxxx.ap-south-1.elb.amazonaws.com/health
+  API Docs:   http://bank-statement-alb-xxxxxxx.ap-south-1.elb.amazonaws.com/docs
+  Image Tag:  20260613-101523
 ```
 
-To **stop** everything:
-```powershell
-# Stop API and Frontend: press Ctrl+C in their terminals
+Copy the **Web App** URL — that's your live deployment.
 
-# Stop databases
-cd infra
-docker compose down
+---
+
+## Part 7 — Verify Your Change is Live
+
+### Check the API
+Open in your browser:
+```
+http://<ALB_DNS>/health        → should return {"status": "healthy"}
+http://<ALB_DNS>/docs          → Swagger UI with all endpoints
+http://<ALB_DNS>/              → root response (has your "deployed_by" field)
+```
+
+### Check the Web App
+Open in your browser:
+```
+http://<ALB_DNS>
+```
+Log in with your account credentials. Your UI changes will be visible here.
+
+### Find the ALB URL any time
+If you missed it from the deploy output, run:
+```powershell
+aws elbv2 describe-load-balancers `
+    --query "LoadBalancers[0].DNSName" `
+    --output text `
+    --region ap-south-1
+```
+
+---
+
+## Part 8 — Pull the Latest Code (Daily Workflow)
+
+When someone else pushes changes and you want to get them:
+
+```powershell
+cd C:\Projects\Bank_statement_scanner
+
+# Pull the latest
+git pull origin main
+
+# Make your changes, then deploy
+.\infra\deploy.ps1
+```
+
+---
+
+## Quick Reference
+
+```powershell
+# Get latest code
+git pull origin main
+
+# Make changes in VS Code
+code .
+
+# Deploy everything
+.\infra\deploy.ps1
+
+# Deploy API only (faster)
+.\deploy_api.ps1
+
+# Check live URL
+aws elbv2 describe-load-balancers --query "LoadBalancers[0].DNSName" --output text --region ap-south-1
 ```
 
 ---
 
 ## Troubleshooting
 
-### `venv\Scripts\activate` gives an error about execution policy
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-Then try activating again.
+### `docker: command not found` or Docker errors
+Docker Desktop is not running. Open Docker Desktop from the Start Menu and wait
+for the whale icon to show "Docker Desktop is running", then re-run the deploy.
 
-### `pip install` fails on `argon2-cffi`
-Visual C++ Build Tools aren't installed. Go back to Part 1.1.
+### `aws: command not found`
+AWS CLI is not installed or not on PATH. Reinstall from
+https://awscli.amazonaws.com/AWSCLIV2.msi and restart PowerShell.
 
-### `tesseract: command not found`
-Tesseract is not on PATH. Make sure you added `C:\Program Files\Tesseract-OCR`
-to your **System** PATH (not User PATH), then open a **new** terminal.
+### `Unable to locate credentials`
+Run `aws configure` and enter your Access Key ID and Secret Access Key.
 
-### `pdfinfo: command not found`
-Poppler is not on PATH. Make sure you added `C:\poppler\Library\bin` to PATH,
-then open a **new** terminal.
+### `Error: denied: Your authorization token has expired`
+Re-run the deploy script. It refreshes the ECR login automatically at the start.
 
-### Docker Compose fails or containers exit immediately
-- Make sure Docker Desktop is running (whale icon in taskbar = running)
-- Run `docker compose logs <service-name>` to see what failed
-- Port conflicts: check if something else is using 5432, 6379, or 9000
+### ECS deployment times out
+The deploy script waits up to 10 minutes for services to stabilize.
+If it times out, check the AWS Console:
+- Go to **ECS → Clusters → bank-statement-cluster**
+- Click the service → **Events** tab to see what's wrong
+- Check **CloudWatch Logs** under `/ecs/bank-statement` for container errors
 
-### API starts but shows database errors
-Make sure the `.env` file exists in `apps\api\` and has `DATABASE_URL` set.
+### Changes not showing after deploy
+- ECS caches the old task. Wait 2–3 minutes after "Deployment Complete" for
+  the ALB to route to the new containers.
+- Hard-refresh the browser (`Ctrl + Shift + R`).
 
-### Frontend shows "Network Error" or API calls fail
-- Make sure the API is running on port 8000
-- Check that `CORS_ORIGINS=http://localhost:3000` is set in `.env`
-
----
-
-## Deploying to AWS (from Windows)
-
-Instead of `infra/deploy.sh` (bash-only), use the PowerShell script:
-
-```powershell
-# Prerequisites: AWS CLI configured, Docker Desktop running
-aws configure   # enter your Access Key, Secret, region: ap-south-1
-
-# Full deploy (API + Web → ECR → ECS)
-cd C:\Projects\Bank_statement_scanner
-.\infra\deploy.ps1
-
-# API only
-.\deploy_api.ps1
-```
+### `python: command not found` in deploy script
+Python is not on PATH. Reinstall Python and tick **"Add to PATH"** during install.
+Then restart PowerShell.
