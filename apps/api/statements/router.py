@@ -326,17 +326,22 @@ async def upload_statement(
             with pdfplumber.open(str(file_path), password=password) as pdf:
                 pass
         except PDFPasswordIncorrect:
-            statement.status = "FAILED"
             exc_msg = "Incorrect password. Please provide the correct PDF password." if password else "This PDF is password-protected. Please re-upload with the document password."
-            statement.error_message = exc_msg
-            await db.flush()
+            # Delete the orphan statement record so it doesn't appear as FAILED
+            # when the user retries with the correct password (which would create
+            # a second READY_FOR_REVIEW record alongside this one).
+            await db.delete(statement)
             await db.commit()
+            # Also remove the uploaded file to keep storage clean
+            try:
+                file_path.unlink(missing_ok=True)
+            except Exception:
+                pass
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={
                     "error_code": "INVALID_PASSWORD" if password else "PASSWORD_REQUIRED",
                     "message": exc_msg,
-                    "statement_id": statement.id,
                 },
             )
         except Exception:

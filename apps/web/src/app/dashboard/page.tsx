@@ -146,34 +146,35 @@ export default function DashboardPage() {
   }, [router]);
 
   // Load persisted statements from API on page load
-  useEffect(() => {
+  const fetchStatements = useCallback(async () => {
     const token = localStorage.getItem("access_token") || localStorage.getItem("token");
-    const fetchStatements = async () => {
-      try {
-        const res = await fetch(`${API}/v1/statements?page=1&size=20`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.data && data.data.items) {
-            setStatements(
-              data.data.items.map((stmt: StatementListApiItem) => ({
-                id: stmt.id,
-                filename: stmt.filename || "Unknown",
-                bank: stmt.bank_code || stmt.bank_id || "Unknown",
-                file_type: stmt.file_type,
-                status: stmt.status,
-                error: stmt.error_message,
-              }))
-            );
-          }
+    try {
+      const res = await fetch(`${API}/v1/statements?page=1&size=20`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.data && data.data.items) {
+          setStatements(
+            data.data.items.map((stmt: StatementListApiItem) => ({
+              id: stmt.id,
+              filename: stmt.filename || "Unknown",
+              bank: stmt.bank_code || stmt.bank_id || "Unknown",
+              file_type: stmt.file_type,
+              status: stmt.status,
+              error: stmt.error_message,
+            }))
+          );
         }
-      } catch (err) {
-        console.error("Failed to load statements:", err);
       }
-    };
-    fetchStatements();
+    } catch (err) {
+      console.error("Failed to load statements:", err);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchStatements();
+  }, [fetchStatements]);
 
   const fetchResult = useCallback(async (statementId: string) => {
     const res = await fetch(`${API}/v1/statements/${statementId}/result`, {
@@ -310,17 +311,10 @@ const handleDelete = async (statementId: string) => {
       setPasswordNeeded(false);
       setPassword("");
 
-      setStatements((prev) => [
-        {
-          id: data.data.id,
-          filename: data.data.filename,
-          bank: data.data.bank || bank || "Unknown",
-          file_type: data.data.file_type,
-          status: data.data.status,
-          error: data.data.error,
-        },
-        ...prev,
-      ]);
+      // Re-fetch the full list from the server instead of optimistically pushing
+      // a local entry — this prevents duplicates when the page is revisited or
+      // the background job immediately marks the statement as FAILED.
+      await fetchStatements();
 
       setFile(null);
       if (data.data.error) {
