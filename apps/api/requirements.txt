@@ -29,6 +29,26 @@ pdf2image>=1.16.0
 aiosmtplib>=3.0.0
 twilio>=8.0.0
 
-# System Dependencies (Required for OCR and PDF image processing, install via OS package manager):
-# - tesseract (Mac: brew install tesseract, Linux: apt install tesseract-ocr)
-# - poppler (Mac: brew install poppler, Linux: apt install poppler-utils)
+# ── System Dependencies (install separately — NOT via pip) ────────────────────
+#
+# 1. Tesseract OCR  (required by pytesseract)
+#    macOS:   brew install tesseract
+#    Linux:   apt install tesseract-ocr
+#    Windows: https://github.com/UB-Mannheim/tesseract/wiki
+#             Download tesseract-ocr-w64-setup-*.exe, install, then add
+#             C:\Program Files\Tesseract-OCR\ to your system PATH.
+#
+# 2. Poppler  (required by pdf2image)
+#    macOS:   brew install poppler
+#    Linux:   apt install poppler-utils
+#    Windows: https://github.com/oschwartz10612/poppler-windows/releases
+#             Extract zip, then add the \Library\bin folder to your system PATH.
+#             e.g. C:\poppler\Library\bin
+#
+# 3. C++ Build Tools  (required by argon2-cffi on Windows)
+#    Windows: https://visualstudio.microsoft.com/visual-cpp-build-tools/
+#             Select "Desktop development with C++" workload.
+#    macOS/Linux: clang/gcc is pre-installed, no action needed.
+#
+# TIP for Windows: Run the API inside Docker Desktop (Linux container) to skip
+# all of the above — the Dockerfile handles all system deps automatically.

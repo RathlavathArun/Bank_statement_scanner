@@ -70,6 +70,9 @@ graph TD
 
 Follow these steps to set up and run the environment locally.
 
+> **Windows users**: See the [Windows Setup](#-windows-setup) section below before
+> running any of these steps.
+
 ### 1. Backend Setup
 
 1. **Navigate to the API folder:**
@@ -92,7 +95,7 @@ Follow these steps to set up and run the environment locally.
    ```
 
 4. **Environment Configuration:**
-   Create a `.env` file in `apps/api/` (refer to `apps/api/.env` if already present) with settings like:
+   Create a `.env` file in `apps/api/` (refer to `apps/api/.env.example`) with settings like:
    ```env
    DATABASE_URL=sqlite+aiosqlite:///./bank_statements.db
    REDIS_URL=redis://localhost:6379/0
@@ -139,6 +142,89 @@ Follow these steps to set up and run the environment locally.
    *Access Web Application at: `http://localhost:3000`*
 
 ---
+
+### 3. Local Infrastructure (Docker Compose)
+
+PostgreSQL, Redis, MinIO (S3), Qdrant, Prometheus and Grafana can be started
+with a single command. Docker Desktop is required.
+
+```bash
+cd infra
+docker compose up -d
+```
+
+---
+
+## 🪟 Windows Setup
+
+Windows requires a few extra steps before the backend will run natively.
+
+> **Easiest option**: Run the API inside Docker Desktop (Linux container).
+> The `Dockerfile` installs all system dependencies automatically.
+> Only `apps/web` needs to run natively (`npm run dev`).
+
+### Step-by-step for native Python on Windows
+
+#### 1 — Install Microsoft C++ Build Tools
+Required to compile `argon2-cffi` (password hashing library).
+
+1. Download: https://visualstudio.microsoft.com/visual-cpp-build-tools/
+2. Run the installer → select **"Desktop development with C++"**
+3. Restart your terminal after install
+
+#### 2 — Install Tesseract OCR
+Required by `pytesseract` (scanned PDF processing).
+
+1. Download installer: https://github.com/UB-Mannheim/tesseract/wiki
+   - File: `tesseract-ocr-w64-setup-*.exe`
+2. Install it (default path: `C:\Program Files\Tesseract-OCR\`)
+3. Add to PATH: open **System Properties → Environment Variables → Path → Edit**
+   → add `C:\Program Files\Tesseract-OCR\`
+4. Verify: open a new terminal → `tesseract --version`
+
+#### 3 — Install Poppler
+Required by `pdf2image` (PDF-to-image conversion for OCR).
+
+1. Download: https://github.com/oschwartz10612/poppler-windows/releases
+   - File: `Release-*.zip`
+2. Extract to e.g. `C:\poppler\`
+3. Add to PATH: add `C:\poppler\Library\bin`
+4. Verify: open a new terminal → `pdfinfo --version`
+
+#### 4 — Start infrastructure with Docker Compose
+```powershell
+cd infra
+docker compose up -d
+```
+
+#### 5 — Run the API
+```powershell
+cd apps\api
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+python main.py
+```
+
+#### 6 — Run the Frontend
+```powershell
+cd apps\web
+npm install
+npm run dev
+```
+
+### Deploying from Windows
+Use the PowerShell deploy script instead of the bash one:
+```powershell
+# Deploy everything (API + Web → ECR → ECS)
+.\infra\deploy.ps1
+
+# Deploy API only
+.\deploy_api.ps1
+```
+
+---
+
 
 ### 3. Running Parser Experiments
 
