@@ -33,6 +33,19 @@ class Settings(BaseSettings):
     S3_SECRET_KEY: str = "minioadmin123"
     S3_BUCKET: str = "bank-statements"
 
+    # ─── OCR Engine ─────────────────────────────
+    # "textract" = always use AWS Textract (errors if no creds)
+    # "tesseract" = always use local Tesseract
+    # "auto" = try Textract first, fall back to Tesseract
+    OCR_ENGINE: str = "auto"
+    TEXTRACT_REGION: str = "us-east-1"
+    TEXTRACT_S3_BUCKET: str = ""           # bucket for async jobs; defaults to S3_BUCKET if blank
+    TEXTRACT_ASYNC_ENABLED: bool = False   # True = use start_document_analysis (S3 flow)
+    TEXTRACT_FEATURE_TYPES: str = "TABLES" # comma-separated: TABLES,FORMS
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
+    AWS_DEFAULT_REGION: str = "us-east-1"
+
     # ─── JWT ─────────────────────────────────────
     JWT_SECRET_KEY: str = "super-secret-key-change-in-production-2026"
     JWT_ALGORITHM: str = "HS256"

@@ -11,7 +11,7 @@ from db.database import get_db
 
 
 @pytest_asyncio.fixture
-async def seeded_statement(db: AsyncSession):
+async def seeded_statement(db: AsyncSession, auth_user):
     """Create a test statement with 5 transactions."""
     # Create firm and client
     firm = Firm(name="Test Firm")
@@ -25,6 +25,7 @@ async def seeded_statement(db: AsyncSession):
     # Create statement
     statement = Statement(
         client_id=client.id,
+        uploaded_by=auth_user.id,
         file_url="/tmp/test.csv",
         file_type="csv",
         bank_code="hdfc",
@@ -347,7 +348,7 @@ async def test_llm_usage_endpoint_returns_statement_totals(client: AsyncClient, 
 
 
 @pytest.mark.asyncio
-async def test_parser_enrichment_pipeline_handles_large_batch(client: AsyncClient, db: AsyncSession):
+async def test_parser_enrichment_pipeline_handles_large_batch(client: AsyncClient, db: AsyncSession, auth_user):
     """Load-style parser + enrichment test for a larger statement batch."""
     firm = Firm(name="Load Firm")
     db.add(firm)
@@ -357,6 +358,7 @@ async def test_parser_enrichment_pipeline_handles_large_batch(client: AsyncClien
     await db.flush()
     statement = Statement(
         client_id=client_record.id,
+        uploaded_by=auth_user.id,
         file_url="/tmp/load.csv",
         file_type="csv",
         bank_code="hdfc",

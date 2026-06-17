@@ -17,7 +17,22 @@ os.environ.setdefault("DATABASE_URL", f"sqlite+aiosqlite:///{db_file.name}")
 os.environ.setdefault("DEBUG", "False")
 
 from db.database import Base, get_db  # noqa: E402
+from db.models import User  # noqa: E402
+from auth.dependencies import get_current_user  # noqa: E402
 from main import app  # noqa: E402
+
+TEST_USER_ID = "00000000-0000-0000-0000-000000000001"
+
+
+@pytest_asyncio.fixture
+async def auth_user():
+    return User(
+        id=TEST_USER_ID,
+        email="test@example.com",
+        password_hash="test",
+        full_name="Test User",
+        email_verified=True,
+    )
 
 
 @pytest_asyncio.fixture
@@ -34,11 +49,15 @@ async def db():
 
 
 @pytest_asyncio.fixture
-async def client(db):
+async def client(db, auth_user):
     async def override_get_db():
         yield db
 
+    async def override_get_current_user():
+        return auth_user
+
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = override_get_current_user
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as test_client:
         yield test_client

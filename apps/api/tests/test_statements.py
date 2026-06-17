@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -14,8 +15,30 @@ os.environ["DEBUG"] = "False"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from auth.dependencies import get_current_user  # noqa: E402
+from db.models import User  # noqa: E402
 from main import app  # noqa: E402
 from statements.parser import StatementParserError  # noqa: E402
+
+
+async def override_get_current_user():
+    return User(
+        id="00000000-0000-0000-0000-000000000001",
+        email="test@example.com",
+        password_hash="test",
+        full_name="Test User",
+        email_verified=True,
+    )
+
+
+@contextmanager
+def authenticated_client():
+    app.dependency_overrides[get_current_user] = override_get_current_user
+    try:
+        with TestClient(app) as client:
+            yield client
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_upload_status_and_result_use_statement_id():
@@ -25,7 +48,7 @@ def test_upload_status_and_result_use_statement_id():
         "2026-05-03,NEFT Received,,10000,58800\n"
     )
 
-    with TestClient(app) as client:
+    with authenticated_client() as client:
         upload_response = client.post(
             "/v1/statements/upload",
             data={"bank": "HDFC"},
@@ -39,7 +62,7 @@ def test_upload_status_and_result_use_statement_id():
         assert statement["id"]
         assert statement["filename"] == "sample.csv"
         assert statement["file_type"] == "csv"
-        assert statement["status"] == "READY_FOR_REVIEW"
+        assert statement["status"] == "PARSING"
 
         status_response = client.get(f"/v1/statements/{statement['id']}/status")
         assert status_response.status_code == 200
@@ -77,7 +100,7 @@ def test_upload_status_and_result_use_statement_id():
 
 
 def test_unknown_statement_returns_404():
-    with TestClient(app) as client:
+    with authenticated_client() as client:
         response = client.get("/v1/statements/not-a-real-id/status")
 
     assert response.status_code == 404
@@ -85,7 +108,7 @@ def test_unknown_statement_returns_404():
 
 
 def test_unsupported_upload_is_saved_as_failed_statement():
-    with TestClient(app) as client:
+    with authenticated_client() as client:
         upload_response = client.post(
             "/v1/statements/upload",
             files={"file": ("notes.txt", "not a statement", "text/plain")},
@@ -93,16 +116,17 @@ def test_unsupported_upload_is_saved_as_failed_statement():
 
         assert upload_response.status_code == 200
         statement = upload_response.json()["data"]
-        assert statement["status"] == "FAILED"
-        assert "Unsupported statement format" in statement["error"]
 
         result_response = client.get(f"/v1/statements/{statement['id']}/result")
         assert result_response.status_code == 200
-        assert result_response.json()["data"]["transactions"] == []
+        result = result_response.json()["data"]
+        assert result["status"] == "FAILED"
+        assert "Unsupported statement format" in result["error"]
+        assert result["transactions"] == []
 
 
 def test_invalid_pdf_upload_is_saved_as_failed_statement():
-    with TestClient(app) as client:
+    with authenticated_client() as client:
         upload_response = client.post(
             "/v1/statements/upload",
             data={"bank": "HDFC"},
@@ -112,8 +136,11 @@ def test_invalid_pdf_upload_is_saved_as_failed_statement():
         assert upload_response.status_code == 200
         statement = upload_response.json()["data"]
         assert statement["file_type"] == "pdf"
-        assert statement["status"] == "FAILED"
-        assert "Could not read this PDF" in statement["error"]
+        status_response = client.get(f"/v1/statements/{statement['id']}/status")
+        assert status_response.status_code == 200
+        status = status_response.json()["data"]
+        assert status["status"] == "FAILED"
+        assert "Could not read this PDF" in status["error"]
 
 
 def test_readable_pdf_parse_warning_still_allows_review(monkeypatch):
@@ -122,7 +149,7 @@ def test_readable_pdf_parse_warning_still_allows_review(monkeypatch):
 
     monkeypatch.setattr("statements.router.parse_statement", fake_parse_statement)
 
-    with TestClient(app) as client:
+    with authenticated_client() as client:
         upload_response = client.post(
             "/v1/statements/upload",
             data={"bank": "SBI"},
@@ -132,8 +159,11 @@ def test_readable_pdf_parse_warning_still_allows_review(monkeypatch):
         assert upload_response.status_code == 200
         statement = upload_response.json()["data"]
         assert statement["file_type"] == "pdf"
-        assert statement["status"] == "READY_FOR_REVIEW"
-        assert "no transaction rows" in statement["error"]
+        status_response = client.get(f"/v1/statements/{statement['id']}/status")
+        assert status_response.status_code == 200
+        status = status_response.json()["data"]
+        assert status["status"] == "READY_FOR_REVIEW"
+        assert "no transaction rows" in status["error"]
 
 
 def test_fuzzy_date_parsing_for_ocr():

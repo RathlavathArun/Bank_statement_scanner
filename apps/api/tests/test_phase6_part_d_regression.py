@@ -39,6 +39,7 @@ def test_per_bank_regression_suite_parses_all_covered_templates():
         "bank_of_baroda",
         "bank_of_india",
         "canara",
+        "cbi",
         "federal",
         "hdfc",
         "icici",

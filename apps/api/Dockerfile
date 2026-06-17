@@ -5,13 +5,13 @@
 FROM python:3.12-slim AS base
 
 # Install system dependencies:
-#   - tesseract-ocr: OCR engine for scanned PDF extraction
-#   - poppler-utils: pdf2image conversion (pdftotext, pdftoppm)
-#   - libgl1: OpenCV headless runtime dependency
+#   - poppler-utils: required by pdf2image for all PDF parsing
+#   - tesseract-ocr + libgl1: only needed when OCR_ENGINE=tesseract or auto
+#     Pass --build-arg INSTALL_TESSERACT=false to skip (OCR_ENGINE=textract)
+ARG INSTALL_TESSERACT=true
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    tesseract-ocr \
     poppler-utils \
-    libgl1 \
+    $([ "$INSTALL_TESSERACT" = "true" ] && echo "tesseract-ocr libgl1") \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

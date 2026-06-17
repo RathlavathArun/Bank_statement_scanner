@@ -1,11 +1,16 @@
 """
 OCR engine for scanned PDF bank statements.
 
-Provides two backends:
-  1. TesseractOCREngine – local OpenCV pre-processing + Tesseract OCR
-  2. TextractOCREngine – AWS Textract (TABLE analysis)
+Provides three backends:
+  1. TesseractOCREngine     – local OpenCV pre-processing + Tesseract OCR
+  2. TextractOCREngine      – AWS Textract synchronous TABLE analysis (≤ 10 MB)
+  3. TextractAsyncOCREngine – AWS Textract async S3-based analysis (any size)
 
-The module picks the best available engine automatically via ``get_ocr_engine()``.
+Engine selection is controlled by the ``OCR_ENGINE`` setting:
+  - ``textract``  → always use Textract (raises if no AWS credentials)
+  - ``tesseract`` → always use local Tesseract
+  - ``auto``      → try Textract first, fall back to Tesseract
+
 Entry point: ``process_scanned_pdf(file_path, on_progress)`` → ``OCRResult``.
 """
 from __future__ import annotations
@@ -14,9 +19,13 @@ import abc
 import logging
 import shutil
 import statistics
+import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+
+import boto3
 
 logger = logging.getLogger(__name__)
 
@@ -530,29 +539,65 @@ class TesseractOCREngine(OCREngine):
         return cells
 
 
-# ── Textract engine ─────────────────────────────────────────────
+# ── Textract engine (synchronous — ≤ 10 MB) ────────────────────
+
+
+def _get_textract_feature_types() -> list[str]:
+    """Parse the TEXTRACT_FEATURE_TYPES setting into a list."""
+    from core.config import settings
+    raw = settings.TEXTRACT_FEATURE_TYPES
+    return [ft.strip().upper() for ft in raw.split(",") if ft.strip()]
 
 
 class TextractOCREngine(OCREngine):
-    """AWS Textract TABLE analysis fallback.
+    """AWS Textract synchronous TABLE/FORMS analysis.
 
-    Sends the document to Textract with ``FeatureTypes=['TABLES']`` and
-    maps the TABLE/CELL blocks into ``OCRResult``.
+    Sends the document to Textract with ``analyze_document`` (sync API).
+    Limited to documents ≤ 10 MB. For larger files use ``TextractAsyncOCREngine``.
     """
 
     def extract(self, file_path: Path, on_progress: Callable | None = None) -> OCRResult:
-        import boto3
+        from botocore.exceptions import ClientError
+        from core.config import settings
 
-        client = boto3.client("textract")
+        client = boto3.client(
+            "textract",
+            region_name=settings.TEXTRACT_REGION or settings.AWS_DEFAULT_REGION,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID or None,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY or None,
+        )
 
         with open(file_path, "rb") as f:
             doc_bytes = f.read()
 
+        feature_types = _get_textract_feature_types()
+
         try:
             response = client.analyze_document(
                 Document={"Bytes": doc_bytes},
-                FeatureTypes=["TABLES"],
+                FeatureTypes=feature_types,
             )
+        except ClientError as exc:
+            error_code = exc.response.get("Error", {}).get("Code", "")
+            if error_code == "ThrottlingException":
+                raise RuntimeError(
+                    "AWS Textract throttled — too many concurrent requests. "
+                    "Retry after a short delay or reduce concurrency."
+                ) from exc
+            elif error_code in ("AccessDeniedException", "UnrecognizedClientException"):
+                raise RuntimeError(
+                    f"AWS Textract auth error ({error_code}). "
+                    "Check AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY."
+                ) from exc
+            elif error_code == "DocumentTooLargeException":
+                raise RuntimeError(
+                    "Document exceeds 10 MB sync limit. "
+                    "Enable TEXTRACT_ASYNC_ENABLED=true to use async S3-based processing."
+                ) from exc
+            else:
+                raise RuntimeError(
+                    f"AWS Textract analysis failed ({error_code}): {exc}."
+                ) from exc
         except Exception as exc:
             raise RuntimeError(
                 f"AWS Textract analysis failed: {exc}. "
@@ -625,33 +670,195 @@ class TextractOCREngine(OCREngine):
         return " ".join(parts)
 
 
+# ── Textract async engine (S3-based — any size) ────────────────
+
+
+class TextractAsyncOCREngine(OCREngine):
+    """AWS Textract asynchronous S3-based analysis.
+
+    For documents of any size — uploads to S3, starts an async analysis job,
+    polls for completion with exponential back-off, then retrieves and
+    paginates through results.
+
+    Pipeline:
+      1. Upload PDF to S3 (TEXTRACT_S3_BUCKET or S3_BUCKET)
+      2. start_document_analysis → get JobId
+      3. Poll get_document_analysis until status != IN_PROGRESS
+      4. Paginate all result pages via NextToken
+      5. Parse through shared _parse_response() logic
+      6. Delete the S3 object (clean up)
+    """
+
+    # Polling configuration
+    INITIAL_WAIT_SECONDS = 5
+    MAX_WAIT_SECONDS = 60
+    MAX_POLL_ATTEMPTS = 60  # ~15 min with exponential backoff
+
+    def extract(self, file_path: Path, on_progress: Callable | None = None) -> OCRResult:
+        from core.config import settings
+
+        region = settings.TEXTRACT_REGION or settings.AWS_DEFAULT_REGION
+        s3_bucket = settings.TEXTRACT_S3_BUCKET or settings.S3_BUCKET
+        feature_types = _get_textract_feature_types()
+
+        s3_client = boto3.client(
+            "s3",
+            region_name=region,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID or None,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY or None,
+        )
+        textract_client = boto3.client(
+            "textract",
+            region_name=region,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID or None,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY or None,
+        )
+
+        # 1. Upload to S3
+        s3_key = f"textract-jobs/{uuid.uuid4().hex}/{file_path.name}"
+        logger.info("Uploading %s to s3://%s/%s for async Textract", file_path.name, s3_bucket, s3_key)
+        s3_client.upload_file(str(file_path), s3_bucket, s3_key)
+
+        try:
+            # 2. Start async analysis
+            start_resp = textract_client.start_document_analysis(
+                DocumentLocation={"S3Object": {"Bucket": s3_bucket, "Name": s3_key}},
+                FeatureTypes=feature_types,
+            )
+            job_id = start_resp["JobId"]
+            logger.info("Textract async job started: %s", job_id)
+
+            # 3. Poll with exponential back-off
+            wait = self.INITIAL_WAIT_SECONDS
+            for attempt in range(self.MAX_POLL_ATTEMPTS):
+                time.sleep(wait)
+                poll_resp = textract_client.get_document_analysis(JobId=job_id)
+                status = poll_resp["JobStatus"]
+
+                if status == "SUCCEEDED":
+                    logger.info("Textract job %s succeeded on poll attempt %d", job_id, attempt + 1)
+                    break
+                elif status == "FAILED":
+                    msg = poll_resp.get("StatusMessage", "Unknown error")
+                    raise RuntimeError(f"Textract async job failed: {msg}")
+                elif status == "IN_PROGRESS":
+                    if on_progress:
+                        on_progress(attempt + 1, self.MAX_POLL_ATTEMPTS)
+                    wait = min(wait * 1.5, self.MAX_WAIT_SECONDS)
+                else:
+                    raise RuntimeError(f"Unexpected Textract job status: {status}")
+            else:
+                raise RuntimeError(
+                    f"Textract async job {job_id} timed out after {self.MAX_POLL_ATTEMPTS} polls."
+                )
+
+            # 4. Paginate through all result pages
+            all_blocks: list[dict] = poll_resp.get("Blocks", [])
+            doc_metadata = poll_resp.get("DocumentMetadata", {})
+            next_token = poll_resp.get("NextToken")
+
+            while next_token:
+                page_resp = textract_client.get_document_analysis(
+                    JobId=job_id, NextToken=next_token
+                )
+                all_blocks.extend(page_resp.get("Blocks", []))
+                next_token = page_resp.get("NextToken")
+
+            # 5. Build a synthetic response dict matching sync format
+            combined_response = {
+                "Blocks": all_blocks,
+                "DocumentMetadata": doc_metadata,
+                "ResponseMetadata": {"RequestId": job_id},
+            }
+            result = TextractOCREngine._parse_response(combined_response)
+            result.metadata["async"] = True
+            result.metadata["job_id"] = job_id
+            return result
+
+        finally:
+            # 6. Clean up S3 object
+            try:
+                s3_client.delete_object(Bucket=s3_bucket, Key=s3_key)
+                logger.info("Cleaned up s3://%s/%s", s3_bucket, s3_key)
+            except Exception as cleanup_exc:
+                logger.warning("Failed to clean up S3 object %s: %s", s3_key, cleanup_exc)
+
+
+# ── Credential check helper ─────────────────────────────────────
+
+
+def _textract_credentials_available() -> bool:
+    """Check whether usable AWS credentials exist for Textract.
+
+    Uses STS GetCallerIdentity as a lightweight credential probe.
+    Returns True if credentials are valid, False otherwise.
+    """
+    try:
+        from core.config import settings
+
+        sts = boto3.client(
+            "sts",
+            region_name=settings.AWS_DEFAULT_REGION,
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID or None,
+            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY or None,
+        )
+        sts.get_caller_identity()
+        return True
+    except Exception as exc:
+        logger.debug("AWS credential check failed: %s", exc)
+        return False
+
+
 # ── Engine selection & entry point ──────────────────────────────
 
 
 def get_ocr_engine() -> OCREngine:
-    """Return the best available OCR engine.
+    """Return the OCR engine based on the ``OCR_ENGINE`` setting.
 
-    Priority:
-      1. Tesseract (local) – checked via ``shutil.which('tesseract')``
-      2. AWS Textract       – checked via boto3 credential chain
+    Selection logic (Option C — config-driven):
+      - ``textract``  → force Textract; raise if no credentials
+      - ``tesseract`` → force local Tesseract; raise if binary not found
+      - ``auto``      → try Textract first, fall back to Tesseract
+
+    When Textract is selected and ``TEXTRACT_ASYNC_ENABLED`` is True,
+    returns a ``TextractAsyncOCREngine`` instead of the sync variant.
     """
+    from core.config import settings
+
+    mode = settings.OCR_ENGINE.lower().strip()
+
+    if mode == "tesseract":
+        if shutil.which("tesseract"):
+            logger.info("Using Tesseract OCR engine (forced via OCR_ENGINE=tesseract).")
+            return TesseractOCREngine()
+        raise RuntimeError(
+            "OCR_ENGINE=tesseract but Tesseract binary not found. "
+            "Install it: apt install tesseract-ocr / brew install tesseract"
+        )
+
+    if mode in ("textract", "auto"):
+        if _textract_credentials_available():
+            if settings.TEXTRACT_ASYNC_ENABLED:
+                logger.info("Using TextractAsync OCR engine (S3-based, async).")
+                return TextractAsyncOCREngine()
+            logger.info("Using Textract OCR engine (sync).")
+            return TextractOCREngine()
+        if mode == "textract":
+            raise RuntimeError(
+                "OCR_ENGINE=textract but no valid AWS credentials found. "
+                "Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or use OCR_ENGINE=auto."
+            )
+        # mode == "auto": fall through to Tesseract
+        logger.info("Textract credentials unavailable, falling back to Tesseract.")
+
+    # Fallback: local Tesseract
     if shutil.which("tesseract"):
-        logger.info("Using Tesseract OCR engine (local).")
+        logger.warning("Falling back to local Tesseract OCR engine.")
         return TesseractOCREngine()
 
-    # Try Textract – verify credentials are usable
-    try:
-        import boto3
-        sts = boto3.client("sts")
-        sts.get_caller_identity()
-        logger.info("Using AWS Textract OCR engine.")
-        return TextractOCREngine()
-    except Exception:
-        pass
-
     raise RuntimeError(
-        "No OCR engine available. Install Tesseract (apt install tesseract-ocr / brew install tesseract) "
-        "or configure AWS credentials for Textract."
+        "No OCR engine available. Set AWS credentials for Textract "
+        "or install Tesseract (apt install tesseract-ocr / brew install tesseract)."
     )
 
 

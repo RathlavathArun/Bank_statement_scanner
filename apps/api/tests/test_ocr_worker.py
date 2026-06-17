@@ -260,25 +260,23 @@ class TestOCRFallback:
 
     @patch("shutil.which", return_value="/usr/bin/tesseract")
     def test_get_engine_prefers_tesseract(self, mock_which):
-        engine = get_ocr_engine()
-        assert isinstance(engine, TesseractOCREngine)
+        with patch("core.config.settings.OCR_ENGINE", "tesseract"):
+            engine = get_ocr_engine()
+            assert isinstance(engine, TesseractOCREngine)
 
     @patch("statements.ocr_worker.shutil.which", return_value=None)
-    def test_falls_back_to_textract(self, _mock_which):
-        """When Tesseract is not found, should try Textract via STS check."""
-        mock_sts = MagicMock()
-        mock_sts.get_caller_identity.return_value = {"Account": "123456789"}
-
-        with patch("boto3.client", return_value=mock_sts):
+    @patch("statements.ocr_worker._textract_credentials_available", return_value=True)
+    def test_falls_back_to_textract(self, _mock_creds, _mock_which):
+        """When Tesseract is not found, should try Textract."""
+        with patch("core.config.settings.OCR_ENGINE", "auto"):
             engine = get_ocr_engine()
             assert isinstance(engine, TextractOCREngine)
 
     @patch("shutil.which", return_value=None)
-    def test_no_engine_raises_when_no_aws(self, mock_which):
+    @patch("statements.ocr_worker._textract_credentials_available", return_value=False)
+    def test_no_engine_raises_when_no_aws(self, _mock_creds, mock_which):
         """When neither Tesseract nor AWS is configured, should raise."""
-        # Remove AWS env vars if present
-        env = {k: v for k, v in os.environ.items() if "AWS" not in k}
-        with patch.dict("os.environ", env, clear=True):
+        with patch("core.config.settings.OCR_ENGINE", "auto"):
             with pytest.raises(Exception):
                 get_ocr_engine()
 
