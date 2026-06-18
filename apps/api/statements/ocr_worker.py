@@ -869,7 +869,37 @@ def process_scanned_pdf(
     """Main entry point for OCR processing of scanned PDF bank statements.
 
     Selects the best available engine and extracts tabular data.
+
+    When ``OCR_ENGINE=auto`` and the Textract engine fails at runtime
+    (e.g. SubscriptionRequiredException, AccessDeniedException, throttling,
+    or any other AWS error), the error is logged and processing automatically
+    retries with the local Tesseract engine.
     """
+    from core.config import settings
+
     engine = get_ocr_engine()
     logger.info("OCR processing %s with engine=%s", file_path.name, engine.__class__.__name__)
+
+    # If we're in auto mode and a Textract engine was chosen, wrap the call so
+    # that any runtime failure (subscription issues, permission errors, network
+    # problems, etc.) gracefully falls back to local Tesseract.
+    is_textract_engine = isinstance(engine, (TextractOCREngine, TextractAsyncOCREngine))
+    if is_textract_engine and settings.OCR_ENGINE.lower().strip() == "auto":
+        try:
+            return engine.extract(file_path, on_progress=on_progress)
+        except Exception as exc:
+            logger.warning(
+                "Textract failed for %s (%s). Falling back to local Tesseract OCR.",
+                file_path.name,
+                exc,
+            )
+            if shutil.which("tesseract"):
+                fallback = TesseractOCREngine()
+                logger.info("Retrying %s with TesseractOCREngine.", file_path.name)
+                return fallback.extract(file_path, on_progress=on_progress)
+            raise RuntimeError(
+                f"Textract failed ({exc}) and no local Tesseract binary was found. "
+                "Install Tesseract: brew install tesseract / apt install tesseract-ocr"
+            ) from exc
+
     return engine.extract(file_path, on_progress=on_progress)
