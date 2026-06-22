@@ -91,10 +91,18 @@ class TesseractOCREngine(OCREngine):
         import numpy as np
         from pdf2image import convert_from_path
 
+        t_convert_start = time.perf_counter()
         images = convert_from_path(str(file_path), dpi=300)
+        t_convert = time.perf_counter() - t_convert_start
+        logger.info(
+            "Tesseract: PDF→images conversion done in %.2fs (%d page(s) at 300 DPI)",
+            t_convert, len(images),
+        )
+
         all_rows: list[OCRRow] = []
 
         for page_idx, pil_image in enumerate(images, start=1):
+            t_page_start = time.perf_counter()
             if on_progress:
                 on_progress(page_idx, len(images))
 
@@ -107,16 +115,25 @@ class TesseractOCREngine(OCREngine):
             grid_cells = self._detect_table_grid(processed)
 
             if grid_cells:
+                n_cells = sum(len(r) for r in grid_cells)
                 logger.info(
-                    "Page %d: detected table grid with %d cells across %d rows",
-                    page_idx, sum(len(r) for r in grid_cells), len(grid_cells),
+                    "Page %d: detected table grid with %d cells across %d rows — running cell-by-cell OCR",
+                    page_idx, n_cells, len(grid_cells),
                 )
                 rows = self._ocr_cells_from_grid(processed, grid_cells, page_number=page_idx)
             else:
-                logger.info("Page %d: no table grid detected, using word-clustering fallback", page_idx)
+                logger.info(
+                    "Page %d: no table grid detected — using word-clustering fallback (PSM 6)",
+                    page_idx,
+                )
                 words = self._run_tesseract(processed, psm=6)
                 rows = self._group_into_rows(words, page_number=page_idx)
 
+            t_page = time.perf_counter() - t_page_start
+            logger.info(
+                "Tesseract: page %d/%d completed in %.2fs → %d rows extracted",
+                page_idx, len(images), t_page, len(rows),
+            )
             all_rows.extend(rows)
 
         return OCRResult(
@@ -788,24 +805,103 @@ class TextractAsyncOCREngine(OCREngine):
 
 
 def _textract_credentials_available() -> bool:
-    """Check whether usable AWS credentials exist for Textract.
+    """Check whether usable AWS credentials exist AND that the IAM principal
+    has permission to call Textract.
 
-    Uses STS GetCallerIdentity as a lightweight credential probe.
-    Returns True if credentials are valid, False otherwise.
+    Two-stage probe:
+      1. STS ``GetCallerIdentity`` — confirms the key pair is valid and not expired.
+      2. Textract ``AnalyzeDocument`` on a minimal 1-pixel JPEG — confirms the
+         IAM user/role actually has ``textract:AnalyzeDocument`` permission.
+         (STS passing does NOT guarantee Textract access.)
+
+    Returns True only if BOTH probes succeed.  All failures are logged at
+    WARNING level so they are visible in the default INFO log output.
     """
-    try:
-        from core.config import settings
+    from core.config import settings
 
+    region = settings.TEXTRACT_REGION or settings.AWS_DEFAULT_REGION
+    key_id = settings.AWS_ACCESS_KEY_ID or None
+    secret = settings.AWS_SECRET_ACCESS_KEY or None
+
+    # ── Stage 1: STS credential validity ────────────────────────
+    try:
         sts = boto3.client(
             "sts",
-            region_name=settings.AWS_DEFAULT_REGION,
-            aws_access_key_id=settings.AWS_ACCESS_KEY_ID or None,
-            aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY or None,
+            region_name=region,
+            aws_access_key_id=key_id,
+            aws_secret_access_key=secret,
         )
-        sts.get_caller_identity()
+        identity = sts.get_caller_identity()
+        logger.info(
+            "AWS STS probe OK — Account: %s, ARN: %s, Region: %s",
+            identity.get("Account", "?"),
+            identity.get("Arn", "?"),
+            region,
+        )
+    except Exception as exc:
+        logger.warning(
+            "AWS credential check FAILED at STS stage — Textract will not be used.\n"
+            "  Region    : %s\n"
+            "  Key ID    : %s\n"
+            "  Error     : %s\n"
+            "  Fix       : Check that AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are "
+            "correct and not expired, and that TEXTRACT_REGION has no leading spaces.",
+            region, key_id, exc,
+        )
+        return False
+
+    # ── Stage 2: Textract IAM permission probe ───────────────────
+    # Send a minimal 1×1 white JPEG to AnalyzeDocument.  We expect either:
+    #   - Success / InvalidParameterException (document too small) → we HAVE permission
+    #   - AccessDeniedException / UnrecognizedClientException      → we LACK permission
+    #
+    # This tiny 1x1 white JPEG (~100 bytes) is used purely for IAM probing.
+    # Using bytes([...]) with integer literals to avoid any string-escaping issues.
+    _MINIMAL_JPEG = bytes([
+        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+        0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43,
+        0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09,
+        0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D, 0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12,
+        0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D, 0x1A, 0x1C, 0x1C, 0x20,
+        0x24, 0x2E, 0x27, 0x20, 0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28, 0x37, 0x29,
+        0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27, 0x39, 0x3D, 0x38, 0x32,
+        0x3C, 0x2E, 0x33, 0x34, 0x32, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01,
+        0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00,
+        0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A, 0x0B, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F,
+        0x00, 0xFB, 0xFF, 0xD9,
+    ])
+    try:
+        textract = boto3.client(
+            "textract",
+            region_name=region,
+            aws_access_key_id=key_id,
+            aws_secret_access_key=secret,
+        )
+        textract.analyze_document(
+            Document={"Bytes": _MINIMAL_JPEG},
+            FeatureTypes=["TABLES"],
+        )
+        logger.info("AWS Textract IAM permission probe OK — textract:AnalyzeDocument is permitted.")
         return True
     except Exception as exc:
-        logger.debug("AWS credential check failed: %s", exc)
+        err_str = str(exc)
+        # InvalidParameterException means Textract got the request but rejected the
+        # tiny image — our IAM permission IS valid, just the document is unusable.
+        if "InvalidParameterException" in err_str or "UnsupportedDocumentException" in err_str:
+            logger.info("AWS Textract IAM permission probe OK (document rejected but permission confirmed).")
+            return True
+        # AccessDeniedException / UnrecognizedClientException = no IAM permission
+        logger.warning(
+            "AWS Textract IAM permission probe FAILED — Textract will not be used.\n"
+            "  Region    : %s\n"
+            "  Key ID    : %s\n"
+            "  Error     : %s\n"
+            "  Fix       : Attach the 'AmazonTextractFullAccess' policy (or at minimum "
+            "'textract:AnalyzeDocument') to the IAM user/role with key ID %s.",
+            region, key_id, exc, key_id,
+        )
         return False
 
 
@@ -877,8 +973,14 @@ def process_scanned_pdf(
     """
     from core.config import settings
 
+    t_total_start = time.perf_counter()
+
     engine = get_ocr_engine()
-    logger.info("OCR processing %s with engine=%s", file_path.name, engine.__class__.__name__)
+    engine_name = engine.__class__.__name__
+    logger.info(
+        "═══ OCR START ═══ file=%s  engine=%s  OCR_ENGINE_setting=%s",
+        file_path.name, engine_name, settings.OCR_ENGINE,
+    )
 
     # If we're in auto mode and a Textract engine was chosen, wrap the call so
     # that any runtime failure (subscription issues, permission errors, network
@@ -886,20 +988,46 @@ def process_scanned_pdf(
     is_textract_engine = isinstance(engine, (TextractOCREngine, TextractAsyncOCREngine))
     if is_textract_engine and settings.OCR_ENGINE.lower().strip() == "auto":
         try:
-            return engine.extract(file_path, on_progress=on_progress)
+            t_engine_start = time.perf_counter()
+            result = engine.extract(file_path, on_progress=on_progress)
+            t_engine = time.perf_counter() - t_engine_start
+            logger.info(
+                "═══ OCR END ═══ engine=%s  pages=%d  rows=%d  elapsed=%.2fs",
+                engine_name, result.pages_processed, len(result.rows), t_engine,
+            )
+            return result
         except Exception as exc:
             logger.warning(
-                "Textract failed for %s (%s). Falling back to local Tesseract OCR.",
+                "Textract FAILED for %s after %.2fs — falling back to local Tesseract OCR.\n"
+                "  Error: %s",
                 file_path.name,
+                time.perf_counter() - t_total_start,
                 exc,
             )
             if shutil.which("tesseract"):
                 fallback = TesseractOCREngine()
-                logger.info("Retrying %s with TesseractOCREngine.", file_path.name)
-                return fallback.extract(file_path, on_progress=on_progress)
+                logger.info(
+                    "Retrying %s with TesseractOCREngine (fallback).",
+                    file_path.name,
+                )
+                t_fallback_start = time.perf_counter()
+                result = fallback.extract(file_path, on_progress=on_progress)
+                t_fallback = time.perf_counter() - t_fallback_start
+                logger.info(
+                    "═══ OCR END (Tesseract fallback) ═══ pages=%d  rows=%d  elapsed=%.2fs",
+                    result.pages_processed, len(result.rows), t_fallback,
+                )
+                return result
             raise RuntimeError(
                 f"Textract failed ({exc}) and no local Tesseract binary was found. "
                 "Install Tesseract: brew install tesseract / apt install tesseract-ocr"
             ) from exc
 
-    return engine.extract(file_path, on_progress=on_progress)
+    t_engine_start = time.perf_counter()
+    result = engine.extract(file_path, on_progress=on_progress)
+    t_engine = time.perf_counter() - t_engine_start
+    logger.info(
+        "═══ OCR END ═══ engine=%s  pages=%d  rows=%d  elapsed=%.2fs",
+        engine_name, result.pages_processed, len(result.rows), t_engine,
+    )
+    return result

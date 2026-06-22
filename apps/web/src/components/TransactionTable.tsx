@@ -50,6 +50,14 @@ function amountValue(value: number | string | null | undefined) {
   return 0;
 }
 
+/** Converts yyyy-mm-dd → dd-mm-yyyy for display */
+function formatDate(raw: string | undefined): string {
+  if (!raw) return "";
+  const parts = raw.split("-");
+  if (parts.length === 3) return `${parts[2]}-${parts[1]}-${parts[0]}`;
+  return raw;
+}
+
 const API = "/api";
 
 export function TransactionTable({
@@ -181,7 +189,7 @@ export function TransactionTable({
             )}
           </button>
         ),
-        cell: (info) => <span className="text-gray-300">{info.getValue()}</span>,
+        cell: (info) => <span className="text-gray-300">{formatDate(info.getValue())}</span>,
       }),
       columnHelper.accessor("narration", {
         header: "Narration",
