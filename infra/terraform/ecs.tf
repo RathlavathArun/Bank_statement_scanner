@@ -225,6 +225,23 @@ resource "aws_service_discovery_service" "api" {
   }
 }
 
+resource "aws_service_discovery_service" "clamav" {
+  name = "clamav"
+
+  dns_config {
+    namespace_id = aws_service_discovery_private_dns_namespace.main.id
+    dns_records {
+      ttl  = 10
+      type = "A"
+    }
+    routing_policy = "MULTIVALUE"
+  }
+
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+}
+
 # --- API Task Definition ---
 # Higher resources than web (512 CPU / 1024 MB) for OCR, PDF parsing, and LLM calls.
 
@@ -291,6 +308,10 @@ resource "aws_ecs_task_definition" "api" {
           value = var.aws_region
         },
         {
+          name  = "TEXTRACT_REGION"
+          value = var.aws_region
+        },
+        {
           name  = "S3_ENDPOINT"
           value = ""
         },
@@ -315,12 +336,22 @@ resource "aws_ecs_task_definition" "api" {
           value = "8000"
         },
         {
-          name  = "CORS_ORIGINS"
-          value = "http://${aws_lb.main.dns_name},https://${aws_lb.main.dns_name},http://localhost:3000"
+          name = "CORS_ORIGINS"
+          # CloudFront URL is the primary origin; ALB direct access and localhost are included for testing.
+          # TODO (custom domain): Add "https://app.yourdomain.com" here once you have one.
+          value = "https://${aws_cloudfront_distribution.main.domain_name},http://${aws_lb.main.dns_name},https://${aws_lb.main.dns_name},http://localhost:3000"
         },
         {
           name  = "DEBUG"
           value = "false"
+        },
+        {
+          name  = "CLAMAV_ENABLED"
+          value = "true"
+        },
+        {
+          name  = "CLAMAV_HOST"
+          value = "clamav.${var.project_name}.local"
         },
       ]
       logConfiguration = {
@@ -357,5 +388,63 @@ resource "aws_ecs_service" "api" {
 
   service_registries {
     registry_arn = aws_service_discovery_service.api.arn
+  }
+}
+
+# --- ClamAV Task Definition ---
+resource "aws_ecs_task_definition" "clamav" {
+  family                   = "${var.project_name}-clamav"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "1024"
+  memory                   = "3072"
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_task_role.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name      = "clamav"
+      image     = "clamav/clamav:latest"
+      essential = true
+      portMappings = [
+        {
+          containerPort = 3310
+          hostPort      = 3310
+        }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.ecs.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "clamav"
+        }
+      }
+    }
+  ])
+}
+
+# ClamAV Service
+resource "aws_ecs_service" "clamav" {
+  name            = "${var.project_name}-clamav-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.clamav.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.private[*].id
+    security_groups  = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.clamav.arn
+
   }
 }

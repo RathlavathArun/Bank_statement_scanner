@@ -142,6 +142,7 @@ env_vars['CORS_ORIGINS']       = {'name': 'CORS_ORIGINS',       'value': f'http:
 env_vars['EMAIL_PROVIDER']     = {'name': 'EMAIL_PROVIDER',     'value': 'ses'}
 env_vars['AWS_REGION']         = {'name': 'AWS_REGION',         'value': aws_region}
 env_vars['AWS_DEFAULT_REGION'] = {'name': 'AWS_DEFAULT_REGION', 'value': aws_region}
+env_vars['TEXTRACT_REGION']    = {'name': 'TEXTRACT_REGION',    'value': aws_region}
 td['containerDefinitions'][0]['environment'] = list(env_vars.values())
 keep = ['family','taskRoleArn','executionRoleArn','networkMode','containerDefinitions',
         'requiresCompatibilities','cpu','memory','runtimePlatform']
@@ -168,6 +169,7 @@ env_vars['CORS_ORIGINS']={'name':'CORS_ORIGINS','value':f'http://{alb_dns},https
 env_vars['EMAIL_PROVIDER']={'name':'EMAIL_PROVIDER','value':'ses'}
 env_vars['AWS_REGION']={'name':'AWS_REGION','value':aws_region}
 env_vars['AWS_DEFAULT_REGION']={'name':'AWS_DEFAULT_REGION','value':aws_region}
+env_vars['TEXTRACT_REGION']={'name':'TEXTRACT_REGION','value':aws_region}
 td['containerDefinitions'][0]['environment']=list(env_vars.values())
 keep=['family','taskRoleArn','executionRoleArn','networkMode','containerDefinitions','requiresCompatibilities','cpu','memory','runtimePlatform']
 print(json.dumps({k:td[k] for k in keep if k in td}))

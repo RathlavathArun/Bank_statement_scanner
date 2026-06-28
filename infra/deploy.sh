@@ -63,6 +63,9 @@ log "━━━ Step 2/6: Capturing Outputs ━━━"
 
 AWS_REGION="ap-south-1"
 ALB_DNS=$(aws elbv2 describe-load-balancers --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "unknown")
+CLOUDFRONT_DOMAIN=$(aws cloudfront list-distributions \
+    --query 'DistributionList.Items[0].DomainName' \
+    --output text 2>/dev/null || echo "")
 ECR_WEB_URL="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/bank-statement-web"
 ECR_API_URL="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/bank-statement-api"
 RDS_ENDPOINT="existing"
@@ -70,6 +73,7 @@ REDIS_ENDPOINT="existing"
 S3_BUCKET="existing"
 API_DISCOVERY_DNS="api.bank-statement.local"
 
+ok "CloudFront:       ${CLOUDFRONT_DOMAIN:-not found}"
 ok "ALB DNS:          $ALB_DNS"
 ok "ECR Web:          $ECR_WEB_URL"
 ok "ECR API:          $ECR_API_URL"
@@ -165,11 +169,14 @@ td['containerDefinitions'][0]['image'] = '$API_IMAGE'
 env_vars = {e['name']: e for e in td['containerDefinitions'][0].get('environment', [])}
 env_vars['CORS_ORIGINS'] = {
     'name': 'CORS_ORIGINS',
-    'value': 'http://$ALB_DNS,https://$ALB_DNS,http://localhost:3000'
+    'value': 'https://$CLOUDFRONT_DOMAIN,http://$ALB_DNS,https://$ALB_DNS,http://localhost:3000'
 }
 env_vars['EMAIL_PROVIDER'] = {'name': 'EMAIL_PROVIDER', 'value': 'ses'}
+env_vars['CLAMAV_ENABLED'] = {'name': 'CLAMAV_ENABLED', 'value': 'true'}
+env_vars['CLAMAV_HOST'] = {'name': 'CLAMAV_HOST', 'value': 'clamav.bank-statement.local'}
 env_vars['AWS_REGION'] = {'name': 'AWS_REGION', 'value': '$AWS_REGION'}
 env_vars['AWS_DEFAULT_REGION'] = {'name': 'AWS_DEFAULT_REGION', 'value': '$AWS_REGION'}
+env_vars['TEXTRACT_REGION'] = {'name': 'TEXTRACT_REGION', 'value': '$AWS_REGION'}
 if not env_vars.get('SMTP_FROM_EMAIL', {}).get('value'):
     smtp_username = env_vars.get('SMTP_USERNAME', {}).get('value', '')
     if smtp_username:
@@ -283,10 +290,10 @@ echo -e "${GREEN}═════════════════════
 echo -e "${GREEN}  🎉 Deployment Complete!${NC}"
 echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
 echo ""
-echo -e "  🌐 Web App:     ${BLUE}http://$ALB_DNS${NC}"
-echo -e "  📡 API Health:  ${BLUE}http://$ALB_DNS/health${NC}"
-echo -e "  📖 API Docs:    ${BLUE}http://$ALB_DNS/docs${NC}"
-echo -e "  📊 Metrics:     ${BLUE}http://$ALB_DNS/metrics${NC}"
+echo -e "  🌐 Web App:     ${BLUE}https://$CLOUDFRONT_DOMAIN${NC}"
+echo -e "  📡 API Health:  ${BLUE}https://$CLOUDFRONT_DOMAIN/health${NC}"
+echo -e "  📖 API Docs:    ${BLUE}https://$CLOUDFRONT_DOMAIN/docs${NC}"
+echo -e "  📊 Metrics:     ${BLUE}https://$CLOUDFRONT_DOMAIN/metrics${NC}"
 echo ""
 echo -e "  🏷️  Image Tag:   $IMAGE_TAG"
 echo -e "  📦 S3 Bucket:   $S3_BUCKET"

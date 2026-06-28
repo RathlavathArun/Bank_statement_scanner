@@ -41,6 +41,9 @@ apps/api/bank_statements.db
 api_td_latest.json
 *.tfstate
 *.tfstate.backup
+*.tfstate.*
+tfplan
+*.tfplan
 
 # Local setup and installer files
 .traffic_venv/

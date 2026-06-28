@@ -2,8 +2,10 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.0
 sqlalchemy[asyncio]==2.0.35
 alembic==1.13.2
-aiosqlite==0.20.0
+# PostgreSQL drivers (asyncpg = async runtime, psycopg2-binary = sync/migrations)
 asyncpg==0.29.0
+psycopg2-binary>=2.9.9
+# aiosqlite is removed — SQLite is not supported in production (see ADR-001)
 pyjwt==2.9.0
 argon2-cffi==23.1.0
 python-dotenv==1.0.1
@@ -29,6 +31,14 @@ opencv-python-headless>=4.8.0
 pdf2image>=1.16.0
 aiosmtplib>=3.0.0
 twilio>=8.0.0
+
+# ── Security additions (Phase 1) ────────────────────────────────────────────
+# Task 3 — ClamAV client
+clamd>=1.0.2
+# Task 8 — TOTP MFA
+pyotp>=2.9.0
+qrcode[pil]>=7.4.0
+cryptography>=42.0.0
 
 # ── System Dependencies (install separately — NOT via pip) ────────────────────
 #

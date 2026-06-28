@@ -9,7 +9,9 @@ import os
 
 class Settings(BaseSettings):
     # ─── Database ────────────────────────────────
-    DATABASE_URL: str = "sqlite+aiosqlite:///./bank_statements.db"
+    # PostgreSQL 16 (asyncpg driver). SQLite is NOT supported in production.
+    # For local dev: run `docker-compose up postgres` first.
+    DATABASE_URL: str = "postgresql+asyncpg://bse_admin:bse_secret_2026@localhost:5432/bank_statements"
 
     # ─── Redis ───────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -38,13 +40,13 @@ class Settings(BaseSettings):
     # "tesseract" = always use local Tesseract
     # "auto" = try Textract first, fall back to Tesseract
     OCR_ENGINE: str = "auto"
-    TEXTRACT_REGION: str = "us-east-1"
+    TEXTRACT_REGION: str = "ap-south-1"
     TEXTRACT_S3_BUCKET: str = ""           # bucket for async jobs; defaults to S3_BUCKET if blank
     TEXTRACT_ASYNC_ENABLED: bool = False   # True = use start_document_analysis (S3 flow)
     TEXTRACT_FEATURE_TYPES: str = "TABLES" # comma-separated: TABLES,FORMS
-    AWS_ACCESS_KEY_ID: str = ""
-    AWS_SECRET_ACCESS_KEY: str = ""
-    AWS_DEFAULT_REGION: str = "us-east-1"
+    AWS_ACCESS_KEY_ID: str | None = None                      # ✅ Falls back to IAM role
+    AWS_SECRET_ACCESS_KEY: str | None = None           
+    AWS_DEFAULT_REGION: str = "ap-south-1"
 
     # ─── JWT ─────────────────────────────────────
     JWT_SECRET_KEY: str = "super-secret-key-change-in-production-2026"
@@ -62,6 +64,16 @@ class Settings(BaseSettings):
     SMTP_FROM_NAME: str = "Bank Statement Scanner"
     OTP_EXPIRY_MINUTES: int = 10
     OTP_MAX_ATTEMPTS_PER_HOUR: int = 5
+
+    # ─── ClamAV (virus scanning) ─────────────────
+    CLAMAV_ENABLED: bool = True
+    CLAMAV_HOST: str = "localhost"
+    CLAMAV_PORT: int = 3310
+
+    # ─── TOTP MFA ────────────────────────────────
+    # 32-byte Fernet key (url-safe base64). Generate with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    TOTP_ENCRYPTION_KEY: str = ""
 
     # ─── App ─────────────────────────────────────
     API_HOST: str = "0.0.0.0"

@@ -71,6 +71,7 @@ env_vars = {e['name']: e for e in new_td['containerDefinitions'][0].get('environ
 env_vars['EMAIL_PROVIDER'] = {'name': 'EMAIL_PROVIDER', 'value': 'ses'}
 env_vars['AWS_REGION'] = {'name': 'AWS_REGION', 'value': aws_region}
 env_vars['AWS_DEFAULT_REGION'] = {'name': 'AWS_DEFAULT_REGION', 'value': aws_region}
+env_vars['TEXTRACT_REGION'] = {'name': 'TEXTRACT_REGION', 'value': aws_region}
 if not env_vars.get('SMTP_FROM_EMAIL', {}).get('value'):
     smtp_username = env_vars.get('SMTP_USERNAME', {}).get('value', '')
     if smtp_username:

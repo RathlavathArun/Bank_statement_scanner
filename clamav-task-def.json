@@ -1,0 +1,35 @@
+{
+  "family": "bank-statement-clamav",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "3072",
+  "executionRoleArn": "arn:aws:iam::074308311178:role/bank-statement-ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::074308311178:role/bank-statement-ecsTaskRole",
+  "runtimePlatform": {
+    "operatingSystemFamily": "LINUX",
+    "cpuArchitecture": "X86_64"
+  },
+  "containerDefinitions": [
+    {
+      "name": "clamav",
+      "image": "clamav/clamav:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 3310,
+          "hostPort": 3310,
+          "protocol": "tcp"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/bank-statement",
+          "awslogs-region": "ap-south-1",
+          "awslogs-stream-prefix": "clamav"
+        }
+      }
+    }
+  ]
+}

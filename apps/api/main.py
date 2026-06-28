@@ -4,6 +4,7 @@ Main entry point. Wires up routes, middleware, and lifecycle events.
 """
 import sys
 import os
+import logging
 
 
 # Ensure the api directory is in the Python path
@@ -15,8 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 from core.config import settings
 from core.response import ApiResponse
+from core.log_filter import configure_pii_logging
 from db.database import init_db
 from auth.router import router as auth_router
+from auth.totp_router import router as totp_router
 from statements.export_router import export_router
 from statements.router import router as statements_router
 from statements.admin_router import router as admin_router
@@ -26,6 +29,10 @@ from statements.websocket import ws_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifecycle — init DB and template manager on startup."""
+    # ── Task 5: configure PII-redacting log filter before any other log output
+    configure_pii_logging(debug=settings.DEBUG)
+    logging.getLogger(__name__).info("[START] Starting Bank Statement Extraction API...")
+
     print("[START] Starting Bank Statement Extraction API...")
     await init_db()
     print("[OK] Database tables created / verified")
@@ -72,12 +79,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── Routers ─────────────────────────────────────────────────
+# ─── Routers ─────────────────────────────────────────────
 app.include_router(statements_router)
 app.include_router(admin_router)
 app.include_router(export_router)
 app.include_router(ws_router)
 app.include_router(auth_router)
+app.include_router(totp_router)  # Task 8: TOTP MFA endpoints
 
 
 # ─── Health Check ────────────────────────────────────────────

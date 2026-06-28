@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_db
 from db.models import Client, ExportJob, Firm, FirmMember, LLMCache, LLMUsage, Statement, Transaction, User
 from auth.dependencies import get_current_user
+from core.antivirus import scan_bytes
 from fastapi.concurrency import run_in_threadpool
 import logging
 
@@ -295,6 +296,13 @@ async def upload_statement(
     original_filename = file.filename or "statement"
     client = await get_or_create_firm_client(db, current_user)
 
+    # ── Task 3: ClamAV virus scan ──────────────────────────────────
+    # Read entirely into memory first so we can scan before touching disk.
+    # Limits memory usage to the max upload size enforced by the API gateway.
+    file_bytes = await file.read()
+    await scan_bytes(file_bytes, filename=original_filename)
+    # ────────────────────────────────────────────────────────
+
     statement = Statement(
         client_id=client.id,
         uploaded_by=current_user.id,
@@ -311,8 +319,8 @@ async def upload_statement(
     file_path = UPLOAD_DIR / f"{statement.id}-{safe_filename}"
     statement.file_url = str(file_path)
 
-    with file_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    # Write scanned bytes to disk (file is already fully read above)
+    file_path.write_bytes(file_bytes)
 
     statement.status = "PARSING"
     await db.flush()

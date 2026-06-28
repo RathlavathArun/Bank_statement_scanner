@@ -10,6 +10,7 @@ engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
     future=True,
+    pool_pre_ping=True,  # reconnect silently on stale connections
 )
 
 async_session = async_sessionmaker(
@@ -37,8 +38,7 @@ async def get_db():
 
 
 async def init_db():
-    """Create all tables and run lightweight schema updates."""
-    from sqlalchemy import text
+    """Create all tables and apply Row-Level Security policies."""
     async with engine.begin() as conn:
         from db.models import (  # noqa: F401
             Firm, User, FirmMember, Client,
@@ -46,11 +46,13 @@ async def init_db():
             LLMCache, LLMUsage, BankTemplate, OTP, ExportJob, OtpCode, PasswordResetToken
         )
         await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=True))
-        
-        # Lightweight migration to add email_verified if it doesn't exist
-        try:
-            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;"))
-        except Exception as e:
-            # SQLite might not support IF NOT EXISTS for columns in older versions, but Postgres does.
-            # We catch it just in case.
-            pass
+
+    # Apply Row-Level Security policies (idempotent — safe to call on every boot)
+    try:
+        from db.rls import apply_rls_policies
+        async with engine.begin() as conn:
+            await apply_rls_policies(conn)
+    except Exception as e:  # noqa: BLE001
+        # RLS setup is best-effort on first boot; will succeed on subsequent calls
+        import logging
+        logging.getLogger(__name__).warning("RLS policy setup skipped: %s", e)

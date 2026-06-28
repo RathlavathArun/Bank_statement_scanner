@@ -51,6 +51,9 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=True)
     email_verified = Column(Boolean, nullable=False, default=False)
+    # Task 8: TOTP MFA — secret stored Fernet-encrypted at rest
+    totp_secret_enc = Column(Text, nullable=True)  # base64-encoded Fernet ciphertext
+    totp_enabled = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
 
     # Relationships

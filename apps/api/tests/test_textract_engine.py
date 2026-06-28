@@ -96,13 +96,13 @@ def _make_settings(**overrides):
     """Create a mock settings object with defaults + overrides."""
     defaults = {
         "OCR_ENGINE": "auto",
-        "TEXTRACT_REGION": "us-east-1",
+        "TEXTRACT_REGION": "ap-south-1",
         "TEXTRACT_S3_BUCKET": "test-bucket",
         "TEXTRACT_ASYNC_ENABLED": False,
         "TEXTRACT_FEATURE_TYPES": "TABLES",
         "AWS_ACCESS_KEY_ID": "AKIA...",
         "AWS_SECRET_ACCESS_KEY": "secret",
-        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_DEFAULT_REGION": "ap-south-1",
         "S3_BUCKET": "bank-statements",
     }
     defaults.update(overrides)

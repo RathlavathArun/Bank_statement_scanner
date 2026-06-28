@@ -54,3 +54,10 @@ variable "jwt_secret" {
   sensitive   = true
   default     = "change-this-in-production-jwt-secret-key-2026"
 }
+
+# Task 6: TLS 1.3 at ALB
+variable "acm_certificate_arn" {
+  description = "ARN of the ACM certificate to attach to the ALB HTTPS listener (TLS 1.3). Required in production."
+  type        = string
+  default     = ""
+}

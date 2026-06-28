@@ -8,6 +8,26 @@ resource "aws_db_subnet_group" "main" {
   }
 }
 
+# ─── Task 7: Customer-managed KMS key for RDS at rest ────────────────────────
+# PRD §11.1 requires customer-managed KMS (SSE-KMS), not AWS-managed (SSE-S3).
+# IMPORTANT: Enable on a fresh RDS instance — changing an existing unencrypted
+# instance requires a snapshot restore and a maintenance window.
+resource "aws_kms_key" "rds" {
+  description             = "${var.project_name} RDS encryption key"
+  deletion_window_in_days = 14
+  enable_key_rotation     = true
+
+  tags = {
+    Name        = "${var.project_name}-rds-kms"
+    Environment = var.environment
+  }
+}
+
+resource "aws_kms_alias" "rds" {
+  name          = "alias/${var.project_name}-rds-${var.environment}"
+  target_key_id = aws_kms_key.rds.key_id
+}
+
 resource "aws_db_instance" "postgres" {
   identifier             = "${var.project_name}-db-${var.environment}"
   allocated_storage      = 20
@@ -21,6 +41,10 @@ resource "aws_db_instance" "postgres" {
   vpc_security_group_ids = [aws_security_group.database.id]
   skip_final_snapshot    = true
   publicly_accessible    = false
+
+  # Task 7: AES-256 SSE-KMS encryption at rest
+  storage_encrypted = true
+  kms_key_id        = aws_kms_key.rds.arn
 
   tags = {
     Name        = "${var.project_name}-postgres"

@@ -89,9 +89,30 @@ services:
       - grafana_data:/var/lib/grafana
       - ../docker/grafana/dashboard.json:/var/lib/grafana/dashboards/bank-statement-scanner.json:ro
 
+  # ─── ClamAV (virus scanning) ──────────────────────────────
+  clamav:
+    image: clamav/clamav:latest
+    platform: linux/amd64
+    container_name: bse_clamav
+    restart: unless-stopped
+    ports:
+      - "3310:3310"
+    volumes:
+      - clamav_data:/var/lib/clamav
+    environment:
+      CLAMAV_NO_FRESHCLAMD: "false"
+      CLAMAV_NO_MILTERD: "true"
+    healthcheck:
+      test: ["CMD", "clamdscan", "--ping", "1"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s  # allow time for signature DB download on first boot
+
 volumes:
   postgres_data:
   redis_data:
   qdrant_data:
   minio_data:
   grafana_data:
+  clamav_data:

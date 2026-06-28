@@ -11,6 +11,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
+from core.pii_masker import mask_for_llm
 from db.models import Transaction
 from statements.llm_tracking import (
     content_hash_for_transaction,
@@ -196,11 +197,17 @@ def heuristic_enrich(transaction: Transaction) -> EnrichmentResult:
 
 
 def transactions_payload(transactions: list[Transaction]) -> list[dict[str, Any]]:
+    """Build the JSON list sent to the LLM — narrations are PII-masked (Task 4)."""
     return [
         {
             "id": tx.id,
             "date": tx.txn_date.isoformat() if tx.txn_date else None,
-            "narration": tx.narration,
+            # mask_for_llm replaces account numbers, PAN, Aadhaar, phone, card
+            # before the text leaves our infrastructure (PRD ss11.4).
+            "narration": mask_for_llm(
+                tx.narration,
+                account_number=getattr(tx, "_stmt_account_number", None),
+            ),
             "debit": str(tx.debit) if tx.debit is not None else None,
             "credit": str(tx.credit) if tx.credit is not None else None,
             "balance": str(tx.balance) if tx.balance is not None else None,
