@@ -65,10 +65,8 @@ async def apply_rls_policies(conn: AsyncConnection) -> None:
         await conn.execute(text(
             f"""
             CREATE POLICY {policy_name} ON {table}
-            USING (
-                current_setting('app.current_firm_id', true) = ''
-                OR {condition}
-            )
+            USING ({condition})
+            WITH CHECK ({condition})
             """
         ))
         logger.info("RLS policy applied: %s on %s", policy_name, table)
@@ -98,7 +96,7 @@ async def set_rls_context(db: AsyncSession, firm_id: Optional[str]) -> None:
             {"fid": str(firm_id)},
         )
     else:
-        # No firm — clear context so policies allow nothing
+        # No firm — an empty context intentionally matches no tenant rows.
         await db.execute(
             text("SELECT set_config('app.current_firm_id', '', true)")
         )

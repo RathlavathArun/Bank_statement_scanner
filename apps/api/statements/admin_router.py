@@ -27,7 +27,7 @@ from core.bank_regression import (
     run_regression_suite,
 )
 from db.database import get_db
-from db.models import BankTemplate, User
+from db.models import BankTemplate, FirmMember, User
 from auth.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -35,13 +35,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/banks", tags=["admin", "banks"])
 
 
-async def get_admin_user(current_user: User = Depends(get_current_user)) -> User:
+async def get_admin_user(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> User:
     """Verify user has admin role."""
-    # Check if user is firm admin or owner
-    # For now, we'll allow any logged-in user
-    # In production, check FirmMember.role == "admin" or "owner"
-    if not current_user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    membership = await db.execute(
+        select(FirmMember).where(FirmMember.user_id == current_user.id)
+    )
+    member = membership.scalar_one_or_none()
+    if not member or member.role not in {"admin", "owner"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin or owner role required")
     return current_user
 
 

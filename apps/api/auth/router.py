@@ -199,6 +199,8 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
     )
     membership = membership_result.scalar_one_or_none()
     firm_id = membership.firm_id if membership else None
+    role = membership.role if membership else None
+    mfa_required = role in {"admin", "owner"}
 
     access_token = create_access_token(user.id, firm_id)
     refresh_token = create_refresh_token(user.id)
@@ -210,6 +212,9 @@ async def login(req: LoginRequest, db: AsyncSession = Depends(get_db)):
                 "email": user.email,
                 "full_name": user.full_name,
                 "email_verified": user.email_verified,
+                "role": role,
+                "mfa_required": mfa_required,
+                "totp_enabled": user.totp_enabled,
             },
             "tokens": TokenResponse(
                 access_token=access_token,
@@ -255,6 +260,7 @@ async def verify_email(req: VerifyEmailRequest, db: AsyncSession = Depends(get_d
     )
     membership = membership_result.scalar_one_or_none()
     firm_id = membership.firm_id if membership else None
+    role = membership.role if membership else None
 
     access_token = create_access_token(user.id, firm_id)
     refresh_token = create_refresh_token(user.id)
@@ -266,6 +272,9 @@ async def verify_email(req: VerifyEmailRequest, db: AsyncSession = Depends(get_d
                 "email": user.email,
                 "full_name": user.full_name,
                 "email_verified": True,
+                "role": role,
+                "mfa_required": role in {"admin", "owner"},
+                "totp_enabled": user.totp_enabled,
             },
             "tokens": TokenResponse(
                 access_token=access_token,

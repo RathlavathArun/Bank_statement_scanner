@@ -328,6 +328,10 @@ resource "aws_ecs_task_definition" "api" {
           value = var.jwt_secret
         },
         {
+          name  = "TOTP_ENCRYPTION_KEY"
+          value = var.totp_encryption_key
+        },
+        {
           name  = "API_HOST"
           value = "0.0.0.0"
         },

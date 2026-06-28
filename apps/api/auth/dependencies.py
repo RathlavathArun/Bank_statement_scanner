@@ -14,16 +14,12 @@ import jwt as pyjwt
 security = HTTPBearer()
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_db),
+async def _authenticate_user(
+    credentials: HTTPAuthorizationCredentials,
+    db: AsyncSession,
+    *,
+    enforce_mfa: bool,
 ) -> User:
-    """
-    Extract user from Bearer token. Raises 401 if token is invalid or user not found.
-    After authentication, binds the user's firm_id to the PostgreSQL RLS context
-    so that all subsequent queries in this request are automatically scoped to
-    that firm (PRD ss11.1, ADR-002).
-    """
     token = credentials.credentials
     try:
         payload = decode_token(token)
@@ -62,17 +58,45 @@ async def get_current_user(
             detail="Email not verified. Please verify your email address before accessing this resource.",
         )
 
-    # RLS context binding
-    # Resolve firm_id from JWT claim (fast path) or DB lookup (fallback).
-    firm_id: str | None = payload.get("firm_id")
-    if not firm_id:
-        membership_result = await db.execute(
-            select(FirmMember.firm_id).where(FirmMember.user_id == user.id)
-        )
-        firm_id = membership_result.scalar_one_or_none()
+    # Resolve tenant and role from the database on every request. Do not trust
+    # a potentially stale firm_id claim after membership changes.
+    membership_result = await db.execute(
+        select(FirmMember).where(FirmMember.user_id == user.id)
+    )
+    membership = membership_result.scalar_one_or_none()
+    role = membership.role if membership else None
+    firm_id = membership.firm_id if membership else None
     await set_rls_context(db, firm_id)
 
+    if enforce_mfa and role in {"admin", "owner"}:
+        if not user.totp_enabled:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "MFA_SETUP_REQUIRED", "message": "Authenticator-app MFA setup is required."},
+            )
+        if not payload.get("totp_ok"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "MFA_REQUIRED", "message": "A current authenticator code is required."},
+            )
+
     return user
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Authenticate a user and enforce mandatory MFA for admin/owner roles."""
+    return await _authenticate_user(credentials, db, enforce_mfa=True)
+
+
+async def get_mfa_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Authenticate a pending-MFA token for TOTP setup/confirmation only."""
+    return await _authenticate_user(credentials, db, enforce_mfa=False)
 
 
 async def require_totp_validated(

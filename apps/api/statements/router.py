@@ -171,11 +171,13 @@ def serialize_transaction(transaction: Transaction) -> dict:
 
 # ─── Background Tasks (no user context) ─────────────────────
 
-async def _background_enrich(statement_id: str, transaction_ids: list[str]) -> None:
+async def _background_enrich(statement_id: str, transaction_ids: list[str], firm_id: str) -> None:
     """Run heuristic / Claude enrichment for freshly parsed transactions."""
     from db.database import async_session  # import here to avoid circular at module load
 
     async with async_session() as session:
+        from db.rls import set_rls_context
+        await set_rls_context(session, firm_id)
         result = await session.execute(
             select(Transaction)
             .where(
@@ -199,10 +201,18 @@ async def _background_enrich(statement_id: str, transaction_ids: list[str]) -> N
         await session.commit()
 
 
-async def _background_parse_statement(statement_id: str, file_path: Path, bank: str | None, password: str | None) -> None:
+async def _background_parse_statement(
+    statement_id: str,
+    file_path: Path,
+    bank: str | None,
+    password: str | None,
+    firm_id: str,
+) -> None:
     from db.database import async_session
     
     async with async_session() as db:
+        from db.rls import set_rls_context
+        await set_rls_context(db, firm_id)
         statement = await db.get(Statement, statement_id)
         if not statement:
             return
@@ -279,7 +289,7 @@ async def _background_parse_statement(statement_id: str, file_path: Path, bank: 
         await notify_status_change(statement.id, statement.status)
 
         if enrich_tx_ids:
-            await _background_enrich(statement.id, enrich_tx_ids)
+            await _background_enrich(statement.id, enrich_tx_ids, firm_id)
 
 
 # ─── Endpoints (all require authentication) ─────────────────
@@ -357,7 +367,14 @@ async def upload_statement(
 
     await db.commit()
 
-    background_tasks.add_task(_background_parse_statement, statement.id, file_path, bank, password)
+    background_tasks.add_task(
+        _background_parse_statement,
+        statement.id,
+        file_path,
+        bank,
+        password,
+        client.firm_id,
+    )
 
     return {
         "success": True,

@@ -16,7 +16,6 @@ PRD reference: Phase 1 Task 8.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone, timedelta
 
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -24,7 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth.dependencies import get_current_user
+from auth.dependencies import get_current_user, get_mfa_user
 from auth.service import create_access_token, decode_token, verify_password
 from auth.totp import (
     decrypt_secret,
@@ -65,25 +64,14 @@ class TotpDisableRequest(BaseModel):
 
 def _create_totp_validated_token(user_id: str, firm_id: str | None) -> str:
     """Create a short-lived access token that carries totp_ok=True."""
-    expires = datetime.now(timezone.utc) + timedelta(
-        minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES
-    )
-    payload = {
-        "sub": user_id,
-        "firm_id": firm_id,
-        "type": "access",
-        "totp_ok": True,
-        "exp": expires,
-        "iat": datetime.now(timezone.utc),
-    }
-    return pyjwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    return create_access_token(user_id, firm_id, totp_ok=True)
 
 
 # ─── Endpoints ──────────────────────────────────────────────────────────────
 
 @router.post("/setup")
 async def totp_setup(
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_mfa_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -109,7 +97,7 @@ async def totp_setup(
 @router.post("/confirm")
 async def totp_confirm(
     req: TotpConfirmRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_mfa_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -140,8 +128,13 @@ async def totp_confirm(
     await db.commit()
     logger.info("TOTP enabled for user=%s", user.id)
 
+    membership = await db.execute(select(FirmMember).where(FirmMember.user_id == user.id))
+    firm_id = membership.scalar_one_or_none()
     return ApiResponse.ok(data={
         "totp_enabled": True,
+        "access_token": _create_totp_validated_token(
+            user.id, firm_id.firm_id if firm_id else None
+        ),
         "message": "TOTP MFA is now active on your account. Keep your recovery codes safe.",
     })
 

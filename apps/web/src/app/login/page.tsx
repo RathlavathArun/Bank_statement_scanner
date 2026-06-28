@@ -35,6 +35,8 @@ export default function LoginPage() {
         localStorage.setItem("access_token", data.data.tokens.access_token);
         if (data.data.user?.email_verified === false) {
           router.push(`/verify-email?email=${encodeURIComponent(email as string)}`);
+        } else if (data.data.user?.mfa_required) {
+          router.push(data.data.user?.totp_enabled ? "/mfa" : "/mfa?setup=1");
         } else {
           router.push("/dashboard");
         }

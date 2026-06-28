@@ -24,7 +24,12 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str, firm_id: Optional[str] = None) -> str:
+def create_access_token(
+    user_id: str,
+    firm_id: Optional[str] = None,
+    *,
+    totp_ok: bool = False,
+) -> str:
     """Create a short-lived JWT access token (15 min default)."""
     expires = datetime.now(timezone.utc) + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     payload = {
@@ -33,6 +38,7 @@ def create_access_token(user_id: str, firm_id: Optional[str] = None) -> str:
         "type": "access",
         "exp": expires,
         "iat": datetime.now(timezone.utc),
+        "totp_ok": totp_ok,
     }
     return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 

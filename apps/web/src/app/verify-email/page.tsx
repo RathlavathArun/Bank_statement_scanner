@@ -56,7 +56,7 @@ function VerifyEmailContent() {
           }
           setSuccess(true);
           setTimeout(() => {
-            router.push("/dashboard");
+            router.push(data.data?.user?.mfa_required ? "/mfa?setup=1" : "/dashboard");
           }, 1500);
         } else {
           setError(data.detail || data.error || data.message || "Invalid or expired code.");

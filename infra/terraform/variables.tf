@@ -55,6 +55,17 @@ variable "jwt_secret" {
   default     = "change-this-in-production-jwt-secret-key-2026"
 }
 
+variable "totp_encryption_key" {
+  description = "URL-safe base64 Fernet key used to encrypt TOTP secrets"
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_-]{43}=$", var.totp_encryption_key))
+    error_message = "totp_encryption_key must be a Fernet key (32 URL-safe base64 bytes)."
+  }
+}
+
 # Task 6: TLS 1.3 at ALB
 variable "acm_certificate_arn" {
   description = "ARN of the ACM certificate to attach to the ALB HTTPS listener (TLS 1.3). Required in production."
