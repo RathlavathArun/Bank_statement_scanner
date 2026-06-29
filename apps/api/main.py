@@ -25,6 +25,7 @@ from statements.export_router import export_router
 from statements.router import router as statements_router
 from statements.jobs_router import router as jobs_router
 from statements.admin_router import router as admin_router
+from statements.rules_router import rules_router  # Task 20: custom rules engine
 from statements.websocket import ws_router
 
 
@@ -88,6 +89,7 @@ app.include_router(statements_router)
 app.include_router(jobs_router)
 app.include_router(admin_router)
 app.include_router(export_router)
+app.include_router(rules_router)   # Task 20: narration rules CRUD
 app.include_router(ws_router)
 app.include_router(auth_router)
 app.include_router(totp_router)  # Task 8: TOTP MFA endpoints

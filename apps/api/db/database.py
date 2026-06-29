@@ -43,7 +43,8 @@ async def init_db():
         from db.models import (  # noqa: F401
             Firm, User, FirmMember, Client,
             Statement, Transaction, LedgerMapping, Ledger, AuditLog,
-            LLMCache, LLMUsage, BankTemplate, OTP, ExportJob, OtpCode, PasswordResetToken
+            LLMCache, LLMUsage, BankTemplate, OTP, ExportJob, OtpCode,
+            PasswordResetToken, NarrationRule,  # Task 20: rules engine
         )
         await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, checkfirst=True))
 

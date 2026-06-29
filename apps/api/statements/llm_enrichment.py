@@ -28,6 +28,7 @@ from statements.llm_tracking import (
     record_usage,
     store_cache,
 )
+from statements.rules_engine import apply_rules  # Task 20: deterministic rules
 
 
 MODE_PATTERNS = {
@@ -650,6 +651,16 @@ async def enrich_transactions_with_tracking(
         cache_misses: list[Transaction] = []
         hashes_by_id: dict[str, str] = {}
 
+        # ── Task 20: custom rules engine (FR-4.6) ─────────────────────────────
+        # Deterministic "if narration X → assign ledger Y" rules run FIRST
+        # so CA-defined overrides always win over automated suggestions.
+        rule_hits: dict[str, EnrichmentResult] = {}
+        if client_id:
+            rule_hits = await apply_rules(db, transactions, client_id)
+        span.set_attribute("rule_hits", len(rule_hits))
+        cached_results.update(rule_hits)
+        # ───────────────────────────────────────────────────────────────────
+
         # ── Task 19: recurring detection pre-filter ───────────────────────────
         # Transactions matching known monthly patterns (rent/salary/EMI) are
         # pre-filled from LedgerMapping without touching the LLM.
@@ -716,6 +727,10 @@ async def enrich_transactions_with_tracking(
                 provider = "openai"
                 model = settings.OPENAI_FALLBACK_MODEL
                 cost = estimate_openai_cost_usd(prompt_tokens, completion_tokens)
+            elif result.source == "rule":  # Task 20 — deterministic, free
+                provider = "local"
+                model = "rules-engine-v1"
+                cost = Decimal("0.000000")
             else:  # heuristic or recurring — no API cost
                 provider = "local"
                 model = "recurring-v1" if result.source == "recurring" else "heuristic-v1"

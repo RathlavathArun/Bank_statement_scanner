@@ -94,6 +94,7 @@ class Client(Base):
     statements = relationship("Statement", back_populates="client", cascade="all, delete-orphan")
     ledger_mappings = relationship("LedgerMapping", back_populates="client", cascade="all, delete-orphan")
     ledgers = relationship("Ledger", back_populates="client", cascade="all, delete-orphan")
+    narration_rules = relationship("NarrationRule", back_populates="client", cascade="all, delete-orphan")
 
 
 # ─── 8.6 Table: statements ──────────────────────────────────
@@ -213,6 +214,34 @@ class Ledger(Base):
 
     # Relationships
     client = relationship("Client", back_populates="ledgers")
+
+
+# ─── Task 20: Custom Rules Engine (FR-4.6) ────────────────────────
+# Deterministic "if narration X → assign ledger Y" rules defined by CA firms.
+# These run BEFORE recurring detection and LLM enrichment, giving the CA
+# full control to override automated suggestions for known counterparties.
+class NarrationRule(Base):
+    __tablename__ = "narration_rules"
+    __table_args__ = (
+        UniqueConstraint("client_id", "match_type", "pattern", name="uq_client_rule"),
+        Index("ix_narration_rules_client_active", "client_id", "is_active"),
+    )
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    client_id = Column(String(36), ForeignKey("clients.id", ondelete="CASCADE"), nullable=False)
+    # match_type: contains | startswith | endswith | regex | exact
+    match_type = Column(String(20), nullable=False, default="contains")
+    pattern = Column(Text, nullable=False)      # the text or regex to match against narration
+    ledger_name = Column(String(255), nullable=False)  # ledger to assign on match
+    priority = Column(Integer, nullable=False, default=100)  # lower = higher priority
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_by = Column(String(36), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    # Relationships
+    client = relationship("Client", back_populates="narration_rules")
+    creator = relationship("User")
 
 
 # ─── Audit Log (additional for security compliance) ──────────
