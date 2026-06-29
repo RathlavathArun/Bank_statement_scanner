@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
@@ -16,7 +17,7 @@ from core.observability import get_tracer
 from core.pii_masker import mask_for_llm
 
 tracer = get_tracer("bank-statement-scanner")
-from db.models import Transaction
+from db.models import Ledger, Transaction
 from statements.llm_tracking import (
     content_hash_for_transaction,
     estimate_cost_usd,
@@ -232,6 +233,7 @@ def _chunk(lst: list, size: int) -> list[list]:
 async def claude_enrich_batch(
     transactions: list[Transaction],
     model: str | None = None,
+    allowed_ledgers: list[str] | None = None,
 ) -> list[EnrichmentResult]:
     """Call the Anthropic API to enrich a batch of transactions.
 
@@ -240,12 +242,38 @@ async def claude_enrich_batch(
         model: Override the model to use. Defaults to settings.ANTHROPIC_MODEL
                (Sonnet 4.5). Pass settings.ANTHROPIC_FALLBACK_MODEL (Haiku)
                when called as part of the Task-15 fallback chain.
+        allowed_ledgers: Task 17 — if provided, the tool schema constrains
+               `suggested_ledger` to this enum and any name outside the list
+               is nulled out after the response is parsed.
     """
     if not settings.ANTHROPIC_API_KEY:
         return []
 
     # Task 15 — use the caller-supplied model or the primary (Sonnet 4.5).
     effective_model = model or settings.ANTHROPIC_MODEL
+
+    # ── Task 17: constrain suggested_ledger to the client's ledger list ──
+    # When allowed_ledgers is provided, inject it into the tool schema enum so
+    # the model can ONLY return names from the client's chart of accounts.
+    # Null is always permitted — the model can abstain.
+    ledger_enum: list[str | None]
+    if allowed_ledgers:
+        ledger_enum = [*allowed_ledgers, None]
+    else:
+        ledger_enum = [None]   # no constraint; any string is accepted below
+
+    suggested_ledger_schema: dict[str, Any]
+    if allowed_ledgers:
+        suggested_ledger_schema = {
+            "type": ["string", "null"],
+            "enum": ledger_enum,
+            "description": "One of the client's existing Tally ledger names, or null.",
+        }
+    else:
+        suggested_ledger_schema = {
+            "type": ["string", "null"],
+            "description": "Practical accounting ledger category, or null if unsure.",
+        }
 
     tool_schema = {
         "name": "parse_bank_narrations",
@@ -265,7 +293,7 @@ async def claude_enrich_batch(
                                 "enum": ["UPI", "NEFT", "RTGS", "IMPS", "CHEQUE", "CASH", "CARD", None],
                             },
                             "counterparty": {"type": ["string", "null"]},
-                            "suggested_ledger": {"type": ["string", "null"]},
+                            "suggested_ledger": suggested_ledger_schema,
                             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                         },
                         "required": [
@@ -332,6 +360,8 @@ async def claude_enrich_batch(
     is_fallback = effective_model != settings.ANTHROPIC_MODEL
     source_tag = "claude-fallback" if is_fallback else "claude"
 
+    allowed_set = set(allowed_ledgers) if allowed_ledgers else None
+
     by_id = {tx.id: tx for tx in transactions}
     results: list[EnrichmentResult] = []
     for item in tool_input.get("items", []):
@@ -339,13 +369,20 @@ async def claude_enrich_batch(
         if not tx:
             continue
         confidence = Decimal(str(item.get("confidence") or 0)).quantize(Decimal("0.001"))
+
+        # Task 17: reject any ledger name the model hallucinated outside the
+        # allowed set. Null it out rather than silently accepting it.
+        raw_ledger = item.get("suggested_ledger")
+        if allowed_set and raw_ledger and raw_ledger not in allowed_set:
+            raw_ledger = None
+
         results.append(
             EnrichmentResult(
                 transaction_id=tx.id,
                 narration_clean=item.get("narration_clean") or clean_narration(tx.narration or ""),
                 payment_mode=item.get("payment_mode"),
                 counterparty=item.get("counterparty"),
-                suggested_ledger=item.get("suggested_ledger"),
+                suggested_ledger=raw_ledger,
                 confidence=max(Decimal("0.000"), min(confidence, Decimal("1.000"))),
                 source=source_tag,
                 cache_status="MISS",
@@ -354,13 +391,20 @@ async def claude_enrich_batch(
     return results
 
 
-async def enrich_transactions(transactions: list[Transaction]) -> list[EnrichmentResult]:
+async def enrich_transactions(
+    transactions: list[Transaction],
+    allowed_ledgers: list[str] | None = None,
+) -> list[EnrichmentResult]:
     """Enrich transactions using the Sonnet → Haiku → heuristic fallback chain.
 
     Task 15 fallback order:
       1. Claude Sonnet 4.5 (primary — highest accuracy)
       2. Claude 3.5 Haiku  (fallback — if Sonnet is rate-limited / unavailable)
       3. Heuristic engine  (local — no external API call, always available)
+
+    Task 17:
+      allowed_ledgers constrains the LLM's suggested_ledger to the client's
+      existing chart of accounts, preventing hallucinated ledger names.
     """
     if not transactions:
         return []
@@ -369,17 +413,19 @@ async def enrich_transactions(transactions: list[Transaction]) -> list[Enrichmen
 
     # ── Step 1: Try primary model (Sonnet 4.5) ────────────────────────────
     try:
-        llm_results = await claude_enrich_batch(transactions)
-    except (httpx.HTTPError, ValueError, KeyError) as primary_err:
+        llm_results = await claude_enrich_batch(
+            transactions, allowed_ledgers=allowed_ledgers
+        )
+    except (httpx.HTTPError, ValueError, KeyError):
         # ── Step 2: Sonnet failed — retry with Haiku fallback ─────────────
         if settings.ANTHROPIC_FALLBACK_MODEL:
             try:
                 llm_results = await claude_enrich_batch(
                     transactions,
                     model=settings.ANTHROPIC_FALLBACK_MODEL,
+                    allowed_ledgers=allowed_ledgers,
                 )
             except (httpx.HTTPError, ValueError, KeyError):
-                # Both LLM tiers failed — heuristic engine will fill the gap
                 llm_results = []
         else:
             llm_results = []
@@ -419,13 +465,26 @@ async def enrich_transactions_with_tracking(
     db: AsyncSession,
     transactions: list[Transaction],
     statement_id: str,
+    client_id: str | None = None,
 ) -> list[EnrichmentResult]:
     if not transactions:
         return []
 
+    # Task 17 — fetch the client's existing ledger names so the LLM is
+    # constrained to only suggest names from their chart of accounts.
+    allowed_ledgers: list[str] | None = None
+    if client_id:
+        ledger_rows = await db.execute(
+            select(Ledger.name).where(Ledger.client_id == client_id).order_by(Ledger.name)
+        )
+        names = [row[0] for row in ledger_rows.all()]
+        if names:
+            allowed_ledgers = names
+
     with tracer.start_as_current_span("llm_enrichment") as span:
         span.set_attribute("statement_id", statement_id)
         span.set_attribute("transaction_count", len(transactions))
+        span.set_attribute("ledger_count", len(allowed_ledgers) if allowed_ledgers else 0)
         cached_results: dict[str, EnrichmentResult] = {}
         cache_misses: list[Transaction] = []
         hashes_by_id: dict[str, str] = {}
@@ -453,7 +512,7 @@ async def enrich_transactions_with_tracking(
 
         async def _enrich_batch(batch: list[Transaction]) -> list[EnrichmentResult]:
             async with semaphore:
-                return await enrich_transactions(batch)
+                return await enrich_transactions(batch, allowed_ledgers=allowed_ledgers)
 
         batch_results_nested = await asyncio.gather(
             *[_enrich_batch(batch) for batch in batches]

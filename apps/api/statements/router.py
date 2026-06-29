@@ -180,13 +180,26 @@ def serialize_transaction(transaction: Transaction) -> dict:
 
 # ─── Background Tasks (no user context) ─────────────────────
 
-async def _background_enrich(statement_id: str, transaction_ids: list[str], firm_id: str) -> None:
+async def _background_enrich(
+    statement_id: str,
+    transaction_ids: list[str],
+    firm_id: str,
+    client_id: str | None = None,
+) -> None:
     """Run heuristic / Claude enrichment for freshly parsed transactions."""
     from db.database import async_session  # import here to avoid circular at module load
+    from db.models import Statement
 
     async with async_session() as session:
         from db.rls import set_rls_context
         await set_rls_context(session, firm_id)
+
+        # Resolve client_id from statement if not supplied by caller.
+        resolved_client_id = client_id
+        if not resolved_client_id:
+            stmt_row = await session.get(Statement, statement_id)
+            resolved_client_id = stmt_row.client_id if stmt_row else None
+
         result = await session.execute(
             select(Transaction)
             .where(
@@ -200,7 +213,8 @@ async def _background_enrich(statement_id: str, transaction_ids: list[str], firm
             return
 
         enrichments = await enrich_transactions_with_tracking(
-            session, list(transactions), statement_id
+            session, list(transactions), statement_id,
+            client_id=resolved_client_id,
         )
         by_id = {e.transaction_id: e for e in enrichments}
         for tx in transactions:
@@ -298,7 +312,7 @@ async def _background_parse_statement(
         await notify_status_change(statement.id, statement.status)
 
         if enrich_tx_ids:
-            await _background_enrich(statement.id, enrich_tx_ids, firm_id)
+            await _background_enrich(statement.id, enrich_tx_ids, firm_id, client_id=statement.client_id)
 
 
 # ─── Endpoints (all require authentication) ─────────────────

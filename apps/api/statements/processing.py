@@ -331,7 +331,10 @@ async def enrich_transactions_job(
     await _set_statement_job(db, statement, "llm", job_id=job_id, status="STARTED", stage="enriching", progress=40)
     update_job_progress(job_id, job_type="llm", status="STARTED", stage="enriching", progress=40, statement_id=statement_id)
 
-    enrichments = await enrich_transactions_with_tracking(db, list(transactions), statement_id)
+    enrichments = await enrich_transactions_with_tracking(
+        db, list(transactions), statement_id,
+        client_id=statement.client_id,  # Task 17: constrain LLM to client's ledger list
+    )
     by_id = {item.transaction_id: item for item in enrichments}
     for transaction in transactions:
         enrichment = by_id.get(transaction.id)
