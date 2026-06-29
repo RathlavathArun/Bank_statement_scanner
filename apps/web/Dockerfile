@@ -26,16 +26,16 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Don't run as root
-RUN addgroup --system --gid 1001 nodejs \
-    && adduser --system --uid 1001 nextjs
+# Don't run as root - explicit UID 10001 for SOC2 compliance
+RUN addgroup --system --gid 10001 nodejs \
+    && adduser --system --uid 10001 nextjs
 
 # Copy standalone output + static assets + public dir
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
-USER nextjs
+USER 10001:10001
 
 EXPOSE 3000
 

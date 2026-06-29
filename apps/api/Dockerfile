@@ -20,11 +20,18 @@ WORKDIR /app
 COPY apps/api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# ── Create non-root user for SOC2 compliance ─────────────────
+RUN groupadd -g 10001 appgroup && useradd -u 10001 -g appgroup -s /bin/false -m appuser
+
 # ── Copy application code ────────────────────────────────────
-COPY apps/api/ .
+COPY --chown=appuser:appgroup apps/api/ .
 
 # ── Copy bank templates (YAML configs used by parser) ────────
-COPY packages/bank-templates/ /app/bank-templates/
+COPY --chown=appuser:appgroup packages/bank-templates/ /app/bank-templates/
+
+RUN chown -R appuser:appgroup /app
+
+USER 10001:10001
 
 EXPOSE 8000
 

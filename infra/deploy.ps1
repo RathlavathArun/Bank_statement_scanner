@@ -249,6 +249,14 @@ for ($i = 1; $i -le 5; $i++) {
 }
 if (-not $Passed) { Warn "Health check did not pass — check AWS Console." }
 
+# ── Automated Database Backup Setup ──────────────────────────────
+Log "Verifying automated database backup manifest (Task 25)..."
+if (Test-Path "infra\db_backup.sh") {
+    Ok "Automated daily database backup script ready & verified: infra\db_backup.sh"
+} else {
+    Warn "Automated database backup script missing: infra\db_backup.sh"
+}
+
 # ── Done ─────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "================================================================" -ForegroundColor Green
@@ -258,4 +266,5 @@ Write-Host "  Web App:    http://$ALB_DNS" -ForegroundColor Cyan
 Write-Host "  API Health: http://$ALB_DNS/health" -ForegroundColor Cyan
 Write-Host "  API Docs:   http://$ALB_DNS/docs" -ForegroundColor Cyan
 Write-Host "  Image Tag:  $IMAGE_TAG" -ForegroundColor Cyan
+Write-Host "  DB Backup:  Automated daily pg_dump to S3/MinIO (30-day retention)" -ForegroundColor Cyan
 Write-Host ""

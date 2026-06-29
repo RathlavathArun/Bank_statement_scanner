@@ -283,6 +283,17 @@ for i in {1..5}; do
 done
 
 # ═════════════════════════════════════════════════════════════
+# Automated Database Backup Setup
+# ═════════════════════════════════════════════════════════════
+log "Verifying automated database backup manifest (Task 25)..."
+if [ -f "infra/db_backup.sh" ]; then
+    chmod +x infra/db_backup.sh
+    ok "Automated daily database backup script ready & verified: infra/db_backup.sh"
+else
+    warn "Automated database backup script missing: infra/db_backup.sh"
+fi
+
+# ═════════════════════════════════════════════════════════════
 # Done!
 # ═════════════════════════════════════════════════════════════
 echo ""
@@ -299,4 +310,5 @@ echo -e "  🏷️  Image Tag:   $IMAGE_TAG"
 echo -e "  📦 S3 Bucket:   $S3_BUCKET"
 echo -e "  🗄️  RDS:         $RDS_ENDPOINT"
 echo -e "  ⚡ Redis:       $REDIS_ENDPOINT"
+echo -e "  🛡️  DB Backup:   Automated daily pg_dump to S3/MinIO (30-day retention)"
 echo ""

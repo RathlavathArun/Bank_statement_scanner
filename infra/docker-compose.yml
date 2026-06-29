@@ -138,6 +138,38 @@ services:
       clamav:
         condition: service_healthy
 
+  # Automated daily database backup service (Task 25)
+  db-backup:
+    image: postgres:16-alpine
+    container_name: bse_db_backup
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-bse_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bse_secret_2026}
+      POSTGRES_DB: ${POSTGRES_DB:-bank_statements}
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      S3_BUCKET: bank-statements
+      BACKUP_RETENTION_DAYS: 30
+    volumes:
+      - ../infra/db_backup.sh:/usr/local/bin/db_backup.sh:ro
+    command: >
+      sh -c "apk add --no-cache curl aws-cli &&
+             curl -s https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc &&
+             chmod +x /usr/local/bin/mc /usr/local/bin/db_backup.sh &&
+             echo 'Starting daily backup scheduler...' &&
+             while true; do
+               sleep 86400;
+               /usr/local/bin/db_backup.sh;
+             done"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   redis_data:
