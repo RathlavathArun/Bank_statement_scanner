@@ -219,9 +219,23 @@ def transactions_payload(transactions: list[Transaction]) -> list[dict[str, Any]
     ]
 
 
-async def claude_enrich_batch(transactions: list[Transaction]) -> list[EnrichmentResult]:
+async def claude_enrich_batch(
+    transactions: list[Transaction],
+    model: str | None = None,
+) -> list[EnrichmentResult]:
+    """Call the Anthropic API to enrich a batch of transactions.
+
+    Args:
+        transactions: Batch of Transaction ORM objects to enrich.
+        model: Override the model to use. Defaults to settings.ANTHROPIC_MODEL
+               (Sonnet 4.5). Pass settings.ANTHROPIC_FALLBACK_MODEL (Haiku)
+               when called as part of the Task-15 fallback chain.
+    """
     if not settings.ANTHROPIC_API_KEY:
         return []
+
+    # Task 15 — use the caller-supplied model or the primary (Sonnet 4.5).
+    effective_model = model or settings.ANTHROPIC_MODEL
 
     tool_schema = {
         "name": "parse_bank_narrations",
@@ -282,7 +296,7 @@ async def claude_enrich_batch(transactions: list[Transaction]) -> list[Enrichmen
             "https://api.anthropic.com/v1/messages",
             headers=headers,
             json={
-                "model": settings.ANTHROPIC_MODEL,
+                "model": effective_model,
                 "max_tokens": 2048,
                 "tools": [tool_schema],
                 "tool_choice": {"type": "tool", "name": "parse_bank_narrations"},
@@ -304,6 +318,10 @@ async def claude_enrich_batch(transactions: list[Transaction]) -> list[Enrichmen
     if not tool_input:
         return []
 
+    # Tag source so tracking layer knows which model actually ran.
+    is_fallback = effective_model != settings.ANTHROPIC_MODEL
+    source_tag = "claude-fallback" if is_fallback else "claude"
+
     by_id = {tx.id: tx for tx in transactions}
     results: list[EnrichmentResult] = []
     for item in tool_input.get("items", []):
@@ -319,7 +337,7 @@ async def claude_enrich_batch(transactions: list[Transaction]) -> list[Enrichmen
                 counterparty=item.get("counterparty"),
                 suggested_ledger=item.get("suggested_ledger"),
                 confidence=max(Decimal("0.000"), min(confidence, Decimal("1.000"))),
-                source="claude",
+                source=source_tag,
                 cache_status="MISS",
             )
         )
@@ -327,13 +345,34 @@ async def claude_enrich_batch(transactions: list[Transaction]) -> list[Enrichmen
 
 
 async def enrich_transactions(transactions: list[Transaction]) -> list[EnrichmentResult]:
+    """Enrich transactions using the Sonnet → Haiku → heuristic fallback chain.
+
+    Task 15 fallback order:
+      1. Claude Sonnet 4.5 (primary — highest accuracy)
+      2. Claude 3.5 Haiku  (fallback — if Sonnet is rate-limited / unavailable)
+      3. Heuristic engine  (local — no external API call, always available)
+    """
     if not transactions:
         return []
 
+    llm_results: list[EnrichmentResult] = []
+
+    # ── Step 1: Try primary model (Sonnet 4.5) ────────────────────────────
     try:
         llm_results = await claude_enrich_batch(transactions)
-    except (httpx.HTTPError, ValueError, KeyError):
-        llm_results = []
+    except (httpx.HTTPError, ValueError, KeyError) as primary_err:
+        # ── Step 2: Sonnet failed — retry with Haiku fallback ─────────────
+        if settings.ANTHROPIC_FALLBACK_MODEL:
+            try:
+                llm_results = await claude_enrich_batch(
+                    transactions,
+                    model=settings.ANTHROPIC_FALLBACK_MODEL,
+                )
+            except (httpx.HTTPError, ValueError, KeyError):
+                # Both LLM tiers failed — heuristic engine will fill the gap
+                llm_results = []
+        else:
+            llm_results = []
 
     results_by_id = {result.transaction_id: result for result in llm_results}
     for transaction in transactions:

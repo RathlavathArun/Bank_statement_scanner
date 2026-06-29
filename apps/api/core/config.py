@@ -27,10 +27,15 @@ class Settings(BaseSettings):
 
     # Claude / Anthropic narration enrichment
     ANTHROPIC_API_KEY: str | None = None
-    ANTHROPIC_MODEL: str = "claude-3-5-haiku-latest"
+    # Task 15 — Primary model: Sonnet 4.5 for > 85% auto-categorisation accuracy
+    # on complex NEFT/RTGS narrations (PRD Phase 3).
+    ANTHROPIC_MODEL: str = "claude-sonnet-4-5"
+    # Task 15 — Fallback model: Haiku is used when Sonnet is unavailable
+    # (rate-limit, API outage, etc.). Lower accuracy but keeps enrichment live.
+    ANTHROPIC_FALLBACK_MODEL: str = "claude-3-5-haiku-latest"
     LLM_BATCH_SIZE: int = 20
-    ANTHROPIC_INPUT_USD_PER_1M: float = 0.80
-    ANTHROPIC_OUTPUT_USD_PER_1M: float = 4.00
+    ANTHROPIC_INPUT_USD_PER_1M: float = 3.00   # Sonnet 4.5 pricing
+    ANTHROPIC_OUTPUT_USD_PER_1M: float = 15.00  # Sonnet 4.5 pricing
     # Zero Data Retention — set to True only AFTER signing the Anthropic ZDR
     # agreement at https://console.anthropic.com/settings/privacy
     # When enabled, the `anthropic-beta: zero-data-retention-2024-02-23` header
