@@ -1,0 +1,11 @@
+groups:
+  - name: bank_extraction_alerts
+    rules:
+      - alert: ExtractionFailureRateTooHigh
+        expr: sum by (bank_code) (rate(bank_extraction_failures_total[1h])) / sum by (bank_code) (rate(bank_extraction_total[1h])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High extraction failure rate for bank template {{ $labels.bank_code }}"
+          description: "The bank template for {{ $labels.bank_code }} has an extraction failure rate exceeding 5% (current rate: {{ $value | humanizePercentage }}). This indicates potential silent degradation of the bank statement layout."

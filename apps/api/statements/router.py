@@ -9,6 +9,9 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Q
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import delete, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from core.response import ApiResponse
+from core.job_progress import get_job_progress
+from core.metrics import record_extraction_failure, record_extraction_success
 
 from db.database import get_db
 from db.models import Client, ExportJob, Firm, FirmMember, LLMCache, LLMUsage, Statement, Transaction, User
@@ -248,12 +251,14 @@ async def _background_parse_statement(
             statement.error_message = str(exc)
             await db.commit()
             await notify_status_change(statement.id, statement.status)
+            record_extraction_failure(statement.bank_code)
             return
         except PDFReadError as exc:
             statement.status = "FAILED"
             statement.error_message = str(exc)
             await db.commit()
             await notify_status_change(statement.id, statement.status)
+            record_extraction_failure(statement.bank_code)
             return
         except StatementParserError as exc:
             statement.status = "READY_FOR_REVIEW" if statement.file_type == "pdf" else "FAILED"
@@ -266,6 +271,10 @@ async def _background_parse_statement(
             }
             await db.commit()
             await notify_status_change(statement.id, statement.status)
+            if statement.status == "FAILED":
+                record_extraction_failure(statement.bank_code)
+            else:
+                record_extraction_success(statement.bank_code)
             return
         except Exception as exc:
             logger.exception("Unexpected error parsing statement")
@@ -273,6 +282,7 @@ async def _background_parse_statement(
             statement.error_message = f"Unexpected error: {exc}"
             await db.commit()
             await notify_status_change(statement.id, statement.status)
+            record_extraction_failure(statement.bank_code)
             return
 
         is_ocr = parsed.metadata.get("parser") == "ocr"
@@ -287,6 +297,7 @@ async def _background_parse_statement(
             **parsed.metadata,
         }
         statement.status = "READY_FOR_REVIEW"
+        record_extraction_success(statement.bank_code)
 
         new_txns: list[Transaction] = []
         for txn in parsed.transactions:

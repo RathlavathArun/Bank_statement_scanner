@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.job_progress import update_job_progress
+from core.metrics import record_extraction_failure, record_extraction_success
 from core.observability import get_tracer
 from db.models import ExportJob, LLMCache, Statement, Transaction
 from db.rls import set_rls_context
@@ -172,6 +173,10 @@ async def process_statement_job(
         await db.commit()
         update_job_progress(job_id, job_type="parse", status=statement.status, stage="parser", progress=100, statement_id=statement.id, detail=str(exc))
         await notify_status_change(statement.id, statement.status)
+        if statement.status == "FAILED":
+            record_extraction_failure(statement.bank_code)
+        else:
+            record_extraction_success(statement.bank_code)
         return {"statement_id": statement.id, "status": statement.status}
     except Exception as exc:  # noqa: BLE001
         logger.exception("Unexpected error parsing statement")
@@ -186,6 +191,7 @@ async def process_statement_job(
 
     statement.metadata_ = {**statement.metadata_, **parsed.metadata}
     statement.status = "READY_FOR_REVIEW"
+    record_extraction_success(statement.bank_code)
 
     new_txns: list[Transaction] = []
     for txn in parsed.transactions:
@@ -263,6 +269,8 @@ async def _fail_statement(
     await db.commit()
     update_job_progress(job_id, job_type=job_type, status="FAILED", stage=stage, progress=100, statement_id=statement.id, detail=message)
     await notify_status_change(statement.id, statement.status)
+    if job_type == "parse":
+        record_extraction_failure(statement.bank_code)
     return {"statement_id": statement.id, "status": statement.status}
 
 
