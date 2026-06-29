@@ -371,14 +371,15 @@ export function TransactionTable({
         },
       }),
       columnHelper.accessor("is_ignored", {
-        header: () => <span className="block text-center">✓</span>,
+        header: () => <span className="block text-center text-xs text-gray-400" title="Ignore this transaction (e.g. bank charges, internal transfers)">Ignore</span>,
         cell: ({ row, getValue }) => (
           <span className="block text-center">
             <input
               type="checkbox"
+              title={getValue() ? "Unignore transaction" : "Mark transaction as ignored"}
               checked={getValue() || false}
               onChange={(event) => onUpdate(row.original.id, { is_ignored: event.target.checked })}
-              className="rounded"
+              className="rounded cursor-pointer accent-gray-500"
             />
           </span>
         ),
@@ -516,7 +517,10 @@ export function TransactionTable({
                 let borderLeft = "";
 
                 // OCR confidence takes priority for flagging
-                if (ocrConf > 0 && ocrConf < 0.7) {
+                if (tx.is_ignored) {
+                  rowClass = "opacity-40 grayscale bg-transparent";
+                  borderLeft = "border-l-4 border-l-gray-600/50";
+                } else if (ocrConf > 0 && ocrConf < 0.7) {
                   rowClass = "bg-red-500/10";
                   borderLeft = "border-l-4 border-l-red-500";
                 } else if (ocrConf > 0 && ocrConf < 0.85) {
@@ -548,7 +552,7 @@ export function TransactionTable({
                     } ${onRowClick && tx.page_number ? "cursor-pointer" : ""}`}
                   >
                     {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="px-4 py-2">
+                      <td key={cell.id} className={`px-4 py-2 ${tx.is_ignored && cell.column.id !== "is_ignored" ? "line-through text-gray-500" : ""}`}>
                         {cell.column.id === "txn_date" && tx.page_number ? (
                           <div className="flex flex-col gap-0.5">
                             {flexRender(cell.column.columnDef.cell, cell.getContext())}
