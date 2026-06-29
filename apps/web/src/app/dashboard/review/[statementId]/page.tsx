@@ -26,6 +26,9 @@ type Transaction = {
   statement_id?: string;
   txn_date?: string;
   narration?: string;
+  narration_clean?: string;
+  reference_no?: string;
+  counterparty?: string;
   debit?: number | string | null;
   credit?: number | string | null;
   balance?: number | string | null;
@@ -250,6 +253,63 @@ export default function ReviewPage() {
     }
   };
 
+  const syncUndoRedoToBackend = async (targetState: Transaction[] | null, beforeState: Transaction[]) => {
+    if (!targetState || isReadOnly) return;
+    
+    const updates: any[] = [];
+    const targetById = new Map(targetState.map((tx) => [tx.id, tx]));
+    
+    for (const beforeTx of beforeState) {
+      const targetTx = targetById.get(beforeTx.id);
+      if (!targetTx) continue;
+      
+      const diff: any = {};
+      const editableFields = ["narration", "narration_clean", "reference_no", "payment_mode", "counterparty", "suggested_ledger", "confirmed_ledger", "is_ignored"] as const;
+      
+      let hasChanges = false;
+      for (const field of editableFields) {
+        if (targetTx[field] !== beforeTx[field]) {
+          diff[field] = targetTx[field];
+          hasChanges = true;
+        }
+      }
+      
+      if (hasChanges) {
+        updates.push({ id: targetTx.id, ...diff });
+      }
+    }
+    
+    if (updates.length > 0) {
+      try {
+        const res = await fetch(`${API}/v1/statements/${statementId}/transactions/bulk-update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: JSON.stringify({ updates }),
+        });
+        if (!res.ok) throw new Error("Undo/redo sync failed");
+        addToast("success", `Restored ${updates.length} edits`);
+      } catch (error) {
+        addToast("error", error instanceof Error ? error.message : "Sync failed");
+      }
+    }
+  };
+
+  const handleUndo = async () => {
+    const before = transactions;
+    const target = undo();
+    if (target) {
+      await syncUndoRedoToBackend(target, before);
+    }
+  };
+
+  const handleRedo = async () => {
+    const before = transactions;
+    const target = redo();
+    if (target) {
+      await syncUndoRedoToBackend(target, before);
+    }
+  };
+
   const enrichTransactions = async () => {
     setEnriching(true);
     try {
@@ -374,10 +434,10 @@ export default function ReviewPage() {
           </div>
 
           <div className="flex items-center gap-2">
-            <button className="rounded-lg bg-white/10 px-3 py-2 text-sm disabled:opacity-40" disabled={!canUndo} onClick={undo}>
+            <button className="rounded-lg bg-white/10 px-3 py-2 text-sm disabled:opacity-40" disabled={!canUndo} onClick={handleUndo}>
               Undo
             </button>
-            <button className="rounded-lg bg-white/10 px-3 py-2 text-sm disabled:opacity-40" disabled={!canRedo} onClick={redo}>
+            <button className="rounded-lg bg-white/10 px-3 py-2 text-sm disabled:opacity-40" disabled={!canRedo} onClick={handleRedo}>
               Redo
             </button>
             <button
@@ -494,6 +554,7 @@ export default function ReviewPage() {
     </div>
   );
 }
+
 
 
 

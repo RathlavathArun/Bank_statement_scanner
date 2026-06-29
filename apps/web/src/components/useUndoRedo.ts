@@ -24,17 +24,21 @@ export function useUndoRedo<T>(initialState: T) {
   );
 
   const undo = useCallback(() => {
-    if (past.length === 0) return;
+    if (past.length === 0) return null;
+    const previous = past[past.length - 1];
     setFuture((f) => [present, ...f]);
-    setPresent(past[past.length - 1]);
+    setPresent(previous);
     setPast((p) => p.slice(0, -1));
+    return previous;
   }, [past, present]);
 
   const redo = useCallback(() => {
-    if (future.length === 0) return;
+    if (future.length === 0) return null;
+    const next = future[0];
     setPast((p) => [...p, present]);
-    setPresent(future[0]);
+    setPresent(next);
     setFuture((f) => f.slice(1));
+    return next;
   }, [future, present]);
 
   const reset = useCallback((s: T) => {
