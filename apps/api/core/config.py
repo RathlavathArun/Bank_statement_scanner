@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     LLM_BATCH_SIZE: int = 20
     ANTHROPIC_INPUT_USD_PER_1M: float = 0.80
     ANTHROPIC_OUTPUT_USD_PER_1M: float = 4.00
+    # Zero Data Retention — set to True only AFTER signing the Anthropic ZDR
+    # agreement at https://console.anthropic.com/settings/privacy
+    # When enabled, the `anthropic-beta: zero-data-retention-2024-02-23` header
+    # is attached to every API call so Anthropic does not retain prompt/response
+    # data. PRD Task 14 — required before PII-masked data flows to the API.
+    ANTHROPIC_ZDR_ENABLED: bool = False
 
     # ─── S3 / MinIO ─────────────────────────────
     S3_ENDPOINT: str = "http://localhost:9000"

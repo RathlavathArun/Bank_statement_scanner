@@ -265,13 +265,22 @@ async def claude_enrich_batch(transactions: list[Transaction]) -> list[Enrichmen
     )
 
     async with httpx.AsyncClient(timeout=20.0) as client:
+        # ── Build request headers ──────────────────────────────────────────
+        headers: dict[str, str] = {
+            "x-api-key": settings.ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        # Task 14 — ZDR: attach the zero-data-retention beta header so
+        # Anthropic does NOT log or retain prompt/response data.
+        # Only active after the ZDR agreement has been signed in the
+        # Anthropic console (https://console.anthropic.com/settings/privacy).
+        if settings.ANTHROPIC_ZDR_ENABLED:
+            headers["anthropic-beta"] = "zero-data-retention-2024-02-23"
+
         response = await client.post(
             "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": settings.ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
+            headers=headers,
             json={
                 "model": settings.ANTHROPIC_MODEL,
                 "max_tokens": 2048,
