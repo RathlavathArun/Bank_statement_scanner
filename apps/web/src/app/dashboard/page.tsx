@@ -1,10 +1,11 @@
 "use client";
 
-import { Dispatch, RefObject, SetStateAction, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import UppyUploader from "@/components/UppyUploader";
 
 const API = "/api";
 
@@ -43,22 +44,7 @@ type ExtractedTransaction = {
   balance?: string | null;
 };
 
-type UploadControlsProps = {
-  fileInputRef: RefObject<HTMLInputElement | null>;
-  file: File | null;
-  bank: string | null;
-  status: string;
-  progress: number;
-  setFile: Dispatch<SetStateAction<File | null>>;
-  setBank: Dispatch<SetStateAction<string | null>>;
-  setStatus: Dispatch<SetStateAction<string>>;
-  setProgress: Dispatch<SetStateAction<number>>;
-  handleUpload: () => Promise<void>;
-  error: string | null;
-  passwordNeeded: boolean;
-  password: string;
-  setPassword: Dispatch<SetStateAction<string>>;
-};
+
 
 async function readApiResponse(res: Response) {
   const text = await res.text();
@@ -86,18 +72,16 @@ export default function DashboardPage() {
   const [user, setUser] = useState<DashboardUser | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const [file, setFile] = useState<File | null>(null);
   const [bank, setBank] = useState<string | null>(null);
-  const [status, setStatus] = useState("idle");
-  const [progress, setProgress] = useState(0);
   const [uploadedStatementId, setUploadedStatementId] = useState<string | null>(null);
   const [statements, setStatements] = useState<StatementSummary[]>([]);
 
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [transactions, setTransactions] = useState<ExtractedTransaction[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [passwordNeeded, setPasswordNeeded] = useState(false);
+  // status is only used for polling after upload; upload progress is inside UppyUploader
+  const [status, setStatus] = useState("idle");
 
   useEffect(() => {
     const token = localStorage.getItem("access_token") || localStorage.getItem("token");
@@ -254,80 +238,21 @@ const handleDelete = async (statementId: string) => {
     alert("Failed to delete statement");
   }
 };
-  const handleUpload = async () => {
-    setError(null);
-    if (!file) return;
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    if (bank) {
-      formData.append("bank", bank);
+  const handleUploadSuccess = useCallback(async (statementId: string, uploadStatus: string) => {
+    setUploadError(null);
+    setUploadedStatementId(statementId);
+    setStatus(uploadStatus);
+    setPasswordNeeded(false);
+    setPassword("");
+    await fetchStatements();
+    if (uploadStatus === "READY_FOR_REVIEW") {
+      fetchResult(statementId);
     }
+  }, [fetchResult, fetchStatements]);
 
-    if (password) {
-      formData.append("password", password);
-    }
-
-    try {
-      setStatus("uploading");
-      setProgress(30);
-
-      const token = localStorage.getItem("access_token") || localStorage.getItem("token");
-      const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-
-      const res = await fetch(`${API}/v1/statements/upload`, {
-        method: "POST",
-        headers,
-        body: formData,
-      });
-
-      const data = await readApiResponse(res);
-
-      if (!res.ok || !data.success) {
-        const detail = data.detail;
-        if (
-          detail &&
-          typeof detail === "object" &&
-          (detail.error_code === "PASSWORD_REQUIRED" || detail.error_code === "INVALID_PASSWORD")
-        ) {
-          setPasswordNeeded(true);
-          setStatus("password_needed");
-          setProgress(0);
-          setError(detail.message || "This PDF is password-protected. Please enter the password.");
-          return;
-        }
-        const message =
-          typeof detail === "string"
-            ? detail
-            : detail?.message || data.error || data.message || "Upload failed";
-        throw new Error(message);
-      }
-
-      setProgress(100);
-      setStatus(data.data.status);
-      setUploadedStatementId(data.data.id);
-      setPasswordNeeded(false);
-      setPassword("");
-
-      // Re-fetch the full list from the server instead of optimistically pushing
-      // a local entry — this prevents duplicates when the page is revisited or
-      // the background job immediately marks the statement as FAILED.
-      await fetchStatements();
-
-      setFile(null);
-      if (data.data.error) {
-        setError(data.data.error);
-      }
-      if (data.data.status === "READY_FOR_REVIEW") {
-        fetchResult(data.data.id);
-      }
-    } catch (err) {
-      setStatus("failed");
-      setError(err instanceof Error ? err.message : "Upload failed. Please try again.");
-    }
-  };
+  const handleUploadError = useCallback((message: string) => {
+    setUploadError(message);
+  }, []);
 
   if (loading) {
     return (
@@ -393,7 +318,7 @@ const handleDelete = async (statementId: string) => {
           </div>
 
           <Button
-           className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white shadow-md transition-all"            onClick={() => fileInputRef.current?.click()}
+           className="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white shadow-md transition-all"            onClick={() => document.getElementById("upload-section")?.scrollIntoView({ behavior: "smooth" })}
           >
             + Upload Statement
           </Button>
@@ -476,19 +401,16 @@ const handleDelete = async (statementId: string) => {
                   auto-extraction.
                 </p>
 
-                <UploadControls
-                  fileInputRef={fileInputRef}
-                  file={file}
+                {uploadError && (
+                  <p className="text-sm text-red-500 text-center">{uploadError}</p>
+                )}
+                <UppyUploader
                   bank={bank}
-                  status={status}
-                  progress={progress}
-                  setFile={setFile}
                   setBank={setBank}
-                  setStatus={setStatus}
-                  setProgress={setProgress}
-                  handleUpload={handleUpload}
-                  error={error}
+                  onUploadSuccess={handleUploadSuccess}
+                  onUploadError={handleUploadError}
                   passwordNeeded={passwordNeeded}
+                  setPasswordNeeded={setPasswordNeeded}
                   password={password}
                   setPassword={setPassword}
                 />
@@ -577,19 +499,16 @@ const handleDelete = async (statementId: string) => {
                 ))}
 
                 <div className="pt-4">
-                  <UploadControls
-                    fileInputRef={fileInputRef}
-                    file={file}
+                  {uploadError && (
+                    <p className="text-sm text-red-500 mb-3">{uploadError}</p>
+                  )}
+                  <UppyUploader
                     bank={bank}
-                    status={status}
-                    progress={progress}
-                    setFile={setFile}
                     setBank={setBank}
-                    setStatus={setStatus}
-                    setProgress={setProgress}
-                    handleUpload={handleUpload}
-                    error={error}
+                    onUploadSuccess={handleUploadSuccess}
+                    onUploadError={handleUploadError}
                     passwordNeeded={passwordNeeded}
+                    setPasswordNeeded={setPasswordNeeded}
                     password={password}
                     setPassword={setPassword}
                   />
@@ -630,98 +549,4 @@ const handleDelete = async (statementId: string) => {
   );
 }
 
-function UploadControls({
-  fileInputRef,
-  file,
-  bank,
-  status,
-  progress,
-  setFile,
-  setBank,
-  setStatus,
-  setProgress,
-  handleUpload,
-  error,
-  passwordNeeded,
-  password,
-  setPassword,
-}: UploadControlsProps) {
-  return (
-    <div className="space-y-4">
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".pdf,.csv,.xlsx,.xls,image/*"
-        onChange={(e) => {
-          const selected = e.target.files?.[0] || null;
-          setFile(selected);
-          setStatus(selected ? "selected" : "idle");
-          setProgress(0);
-        }}
-        className="block w-full text-sm text-slate-500"
-      />
 
-      {file && (
-        <p className="text-sm text-slate-600 dark:text-slate-300">
-          Selected: {file.name}
-        </p>
-      )}
-
-<div className="flex flex-wrap justify-center gap-2">
-          {["HDFC", "ICICI", "SBI", "AXIS", "KOTAK"].map((b) => (
-          <button
-            key={b}
-            onClick={() => setBank(b)}
-            className={`rounded-full px-3 py-1 border text-sm ${
-              bank === b
-                ? "bg-blue-600 text-white border-blue-600"
-                : "border-slate-300 text-slate-600 dark:text-slate-300"
-            }`}
-          >
-            {b}
-          </button>
-        ))}
-      </div>
-
-      {passwordNeeded && (
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 dark:bg-amber-950/30 dark:border-amber-800">
-          <svg className="w-5 h-5 text-amber-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-          </svg>
-          <input
-            type="password"
-            placeholder="Enter PDF password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && file) handleUpload(); }}
-            className="flex-1 px-3 py-1.5 rounded-md border border-amber-300 bg-white text-sm
-                       text-slate-800 placeholder:text-slate-400
-                       focus:outline-none focus:ring-2 focus:ring-amber-400
-                       dark:bg-slate-900 dark:border-amber-700 dark:text-slate-200"
-          />
-        </div>
-      )}
-
-      {status !== "idle" && (
-        <p className="text-sm text-slate-500">
-          Status: {status} {progress > 0 && `(${progress}%)`}
-        </p>
-      )}
-
-      {error && <p className="text-sm text-red-600">{error}</p>}
-
-      <Button
-  variant="outline"
-  className={`w-full sm:w-auto transition-all ${
-    file
-      ? "bg-purple-600 hover:bg-purple-700 text-white border-purple-600"
-      : "glass-input"
-  }`}
-  disabled={!file || (passwordNeeded && !password)}
-  onClick={handleUpload}
->
-  {passwordNeeded ? "Unlock & Upload" : "Upload Statement"}
-</Button>
-    </div>
-  );
-}

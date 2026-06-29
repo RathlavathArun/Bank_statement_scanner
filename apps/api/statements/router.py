@@ -44,10 +44,12 @@ from statements.schemas import (
     StatementListItem, PaginatedTransactions, PaginatedStatements, StatementStatusUpdate,
     EnrichTransactionsRequest,
 )
+from .tus_router import tus_router
 from statements.tasks import enrich_transactions_task, process_statement_task
 from statements.websocket import notify_status_change
 
 router = APIRouter(prefix="/v1/statements", tags=["statements"])
+router.include_router(tus_router, prefix="/upload/tus", tags=["tus"])
 
 UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
