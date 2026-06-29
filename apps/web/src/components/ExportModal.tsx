@@ -8,14 +8,16 @@ type ExportFormat = "tally_xml" | "csv" | "json" | "excel";
 
 export interface ExportJob {
   export_id: string;
+  job_id?: string;
   statement_id?: string;
   format: ExportFormat;
   status: string;
-  download_url: string;
+  download_url?: string;
   filename: string;
   created_at: string;
   expires_at?: string;
   idempotent?: boolean;
+  progress?: number;
 }
 
 interface Props {
@@ -66,24 +68,47 @@ export default function ExportModal({
   const defaultCompanyName = bankId ? `${bankId} Company` : "";
   const defaultBankLedgerName = `${bankId || "Bank"} Account`;
 
+  const loadExports = useCallback(async () => {
+    try {
+      const res = await fetch(`${API}/v1/statements/${statementId}/exports`, {
+        headers: authHeaders(),
+      });
+      if (!res.ok) return [];
+      const data = await res.json();
+      const jobs = Array.isArray(data) ? data : [];
+      setPastExports(jobs);
+      return jobs;
+    } catch {
+      setPastExports([]);
+      return [];
+    }
+  }, [statementId]);
+
+  const waitForJob = useCallback(async (jobId: string) => {
+    for (let attempt = 0; attempt < 90; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      const res = await fetch(`${API}/v1/jobs/${jobId}`, { headers: authHeaders() });
+      if (!res.ok) continue;
+      const payload = await res.json();
+      const data = payload.data || {};
+      if (data.status === "FAILED") {
+        throw new Error(data.detail || "Export failed");
+      }
+      if (data.status === "COMPLETED" || data.status === "READY") {
+        return data;
+      }
+    }
+    throw new Error("Export is still running. Please check previous exports shortly.");
+  }, []);
+
   useEffect(() => {
     if (!isOpen) return;
 
-    const loadExports = async () => {
-      try {
-        const res = await fetch(`${API}/v1/statements/${statementId}/exports`, {
-          headers: authHeaders(),
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        setPastExports(Array.isArray(data) ? data : []);
-      } catch {
-        setPastExports([]);
-      }
-    };
-
-    void loadExports();
-  }, [isOpen, statementId]);
+    const timer = window.setTimeout(() => {
+      void loadExports();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, loadExports]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -125,6 +150,18 @@ export default function ExportModal({
         throw new Error(payload.detail || "Export failed");
       }
 
+      if (payload.job_id && payload.status !== "READY") {
+        setExportJob(payload);
+        await waitForJob(payload.job_id);
+        const jobs = await loadExports();
+        const readyJob = jobs.find((item: ExportJob) => item.export_id === payload.export_id);
+        if (!readyJob) throw new Error("Export completed but was not found");
+        setExportJob(readyJob);
+        lastExportedFormat.current = format;
+        onExportComplete(readyJob);
+        return;
+      }
+
       setExportJob(payload);
       lastExportedFormat.current = format;
       setPastExports((current) => [payload, ...current.filter((item) => item.export_id !== payload.export_id)]);
@@ -134,7 +171,7 @@ export default function ExportModal({
     } finally {
       setLoading(false);
     }
-  }, [bankLedgerName, companyName, defaultBankLedgerName, defaultCompanyName, format, onExportComplete, statementId]);
+  }, [bankLedgerName, companyName, defaultBankLedgerName, defaultCompanyName, format, loadExports, onExportComplete, statementId, waitForJob]);
 
   if (!isOpen) return null;
 
@@ -229,8 +266,9 @@ export default function ExportModal({
                     Using a plain browser anchor is the most reliable download method —
                     no fetch/Blob needed, no auth header required. */}
                 <a
-                  href={downloadUrl(exportJob.download_url)}
+                  href={exportJob.download_url ? downloadUrl(exportJob.download_url) : undefined}
                   download={exportJob.filename}
+                  aria-disabled={!exportJob.download_url}
                   className="inline-flex rounded-xl bg-emerald-500 px-4 py-2 text-sm font-medium text-slate-950 transition hover:bg-emerald-400"
                 >
                   Download {FORMAT_INFO[exportJob.format].label}

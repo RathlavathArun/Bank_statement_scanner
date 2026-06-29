@@ -136,6 +136,7 @@ class ExportRequest(BaseModel):
 
 class ExportJobResponse(BaseModel):
     export_id: str
+    job_id: Optional[str] = None
     statement_id: str
     format: str
     status: str
@@ -145,5 +146,6 @@ class ExportJobResponse(BaseModel):
     created_at: Optional[datetime] = None
     transaction_count: int = 0
     idempotent: bool = False
+    progress: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)

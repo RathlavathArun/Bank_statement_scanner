@@ -1,10 +1,11 @@
 import shutil
+import uuid
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, Query, status
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import delete, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,10 +14,14 @@ from db.database import get_db
 from db.models import Client, ExportJob, Firm, FirmMember, LLMCache, LLMUsage, Statement, Transaction, User
 from auth.dependencies import get_current_user
 from core.antivirus import scan_bytes
+from core.config import settings
+from core.job_progress import update_job_progress
+from core.observability import get_tracer
 from fastapi.concurrency import run_in_threadpool
 import logging
 
 logger = logging.getLogger(__name__)
+tracer = get_tracer("bank-statement-scanner")
 
 from statements.parser import PDFReadError, PasswordProtectedError, StatementParserError, parse_statement
 from statements.ledger_memory import (
@@ -30,11 +35,13 @@ from statements.llm_enrichment import (
     serialize_enrichment,
 )
 from statements.llm_tracking import serialize_usage, summarize_usage
+from statements.processing import enrich_transactions_job, process_statement_job
 from statements.schemas import (
     TransactionItem, TransactionUpdate, BulkUpdateRequest, BulkUpdateResponse,
     StatementListItem, PaginatedTransactions, PaginatedStatements, StatementStatusUpdate,
     EnrichTransactionsRequest,
 )
+from statements.tasks import enrich_transactions_task, process_statement_task
 from statements.websocket import notify_status_change
 
 router = APIRouter(prefix="/v1/statements", tags=["statements"])
@@ -145,6 +152,7 @@ def money(value: Decimal | None) -> str | None:
 
 
 def serialize_statement(statement: Statement) -> dict:
+    jobs = (statement.metadata_ or {}).get("jobs", {})
     return {
         "id": statement.id,
         "filename": statement.metadata_.get("original_filename"),
@@ -153,6 +161,7 @@ def serialize_statement(statement: Statement) -> dict:
         "status": statement.status,
         "path": statement.file_url,
         "error": statement.error_message,
+        "jobs": jobs,
     }
 
 
@@ -296,7 +305,6 @@ async def _background_parse_statement(
 
 @router.post("/upload")
 async def upload_statement(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     bank: str | None = Form(default=None),
     password: str | None = Form(default=None),
@@ -306,31 +314,32 @@ async def upload_statement(
     original_filename = file.filename or "statement"
     client = await get_or_create_firm_client(db, current_user)
 
-    # ── Task 3: ClamAV virus scan ──────────────────────────────────
-    # Read entirely into memory first so we can scan before touching disk.
-    # Limits memory usage to the max upload size enforced by the API gateway.
-    file_bytes = await file.read()
-    await scan_bytes(file_bytes, filename=original_filename)
-    # ────────────────────────────────────────────────────────
+    with tracer.start_as_current_span("upload_file") as span:
+        span.set_attribute("filename", original_filename)
+        # ── Task 3: ClamAV virus scan ──────────────────────────────────
+        file_bytes = await file.read()
+        await scan_bytes(file_bytes, filename=original_filename)
+        # ────────────────────────────────────────────────────────
 
-    statement = Statement(
-        client_id=client.id,
-        uploaded_by=current_user.id,
-        file_url="",
-        file_type=file_type_for(original_filename),
-        bank_code=bank,
-        status="UPLOADED",
-        metadata_={"original_filename": original_filename},
-    )
-    db.add(statement)
-    await db.flush()
+        statement = Statement(
+            client_id=client.id,
+            uploaded_by=current_user.id,
+            file_url="",
+            file_type=file_type_for(original_filename),
+            bank_code=bank,
+            status="UPLOADED",
+            metadata_={"original_filename": original_filename},
+        )
+        db.add(statement)
+        await db.flush()
 
-    safe_filename = Path(original_filename).name
-    file_path = UPLOAD_DIR / f"{statement.id}-{safe_filename}"
-    statement.file_url = str(file_path)
+        safe_filename = Path(original_filename).name
+        file_path = UPLOAD_DIR / f"{statement.id}-{safe_filename}"
+        statement.file_url = str(file_path)
 
-    # Write scanned bytes to disk (file is already fully read above)
-    file_path.write_bytes(file_bytes)
+        # Write scanned bytes to disk (file is already fully read above)
+        file_path.write_bytes(file_bytes)
+        span.set_attribute("statement_id", statement.id)
 
     statement.status = "PARSING"
     await db.flush()
@@ -367,19 +376,43 @@ async def upload_statement(
 
     await db.commit()
 
-    background_tasks.add_task(
-        _background_parse_statement,
-        statement.id,
-        file_path,
-        bank,
-        password,
-        client.firm_id,
-    )
+    if settings.CELERY_TASK_ALWAYS_EAGER:
+        job_id = f"eager-{uuid.uuid4()}"
+        await process_statement_job(
+            db,
+            job_id=job_id,
+            statement_id=statement.id,
+            file_path=str(file_path),
+            bank=bank,
+            password=password,
+            firm_id=client.firm_id,
+        )
+    else:
+        async_result = process_statement_task.delay(
+            statement.id,
+            str(file_path),
+            bank,
+            password,
+            client.firm_id,
+        )
+        job_id = async_result.id
+        update_job_progress(
+            job_id,
+            job_type="parse",
+            status="PENDING",
+            stage="queued",
+            progress=0,
+            statement_id=statement.id,
+        )
 
     return {
         "success": True,
         "message": "Statement uploaded successfully",
-        "data": serialize_statement(statement),
+        "data": {
+            **serialize_statement(statement),
+            "status": "PARSING",
+            "job_id": job_id,
+        },
     }
 
 
@@ -656,6 +689,54 @@ async def enrich_statement_transactions(
     current_user: User = Depends(get_current_user),
 ):
     """Enrich transaction narrations with Claude when configured, otherwise local rules."""
+    stmt = await verify_statement_access(db, statement_id, current_user)
+    firm_id = await get_user_firm_id(db, current_user)
+    if not firm_id:
+        client = await db.get(Client, stmt.client_id)
+        firm_id = client.firm_id if client else None
+    if not firm_id:
+        raise HTTPException(status_code=404, detail="Statement not found")
+
+    if settings.CELERY_TASK_ALWAYS_EAGER:
+        job_id = f"eager-{uuid.uuid4()}"
+        result = await enrich_transactions_job(
+            db,
+            job_id=job_id,
+            statement_id=statement_id,
+            firm_id=firm_id,
+            transaction_ids=body.transaction_ids,
+            only_missing=body.only_missing,
+            limit=body.limit,
+            force=body.force,
+        )
+        return {"success": True, "data": {**result, "job_id": job_id}}
+
+    async_result = enrich_transactions_task.delay(
+        statement_id,
+        firm_id,
+        body.transaction_ids,
+        body.only_missing,
+        body.limit,
+        body.force,
+    )
+    update_job_progress(
+        async_result.id,
+        job_type="llm",
+        status="PENDING",
+        stage="queued",
+        progress=0,
+        statement_id=statement_id,
+    )
+    return {
+        "success": True,
+        "message": "Enrichment job queued",
+        "data": {
+            "statement_id": statement_id,
+            "job_id": async_result.id,
+            "status": "PENDING",
+        },
+    }
+
     await verify_statement_access(db, statement_id, current_user)
 
     query = select(Transaction).where(Transaction.statement_id == statement_id)

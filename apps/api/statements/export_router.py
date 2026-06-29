@@ -11,12 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.service import decode_token
 from core.config import settings
+from core.job_progress import update_job_progress
 from db.database import get_db
-from db.models import ExportJob, Statement, Transaction, User
+from db.models import Client, ExportJob, Statement, Transaction, User
 from auth.dependencies import get_current_user
 from statements.exporters import generate_csv, generate_excel, generate_json, generate_tally_xml
 from statements.schemas import ExportJobResponse, ExportRequest
-from statements.router import verify_statement_access
+from statements.processing import export_statement_job
+from statements.router import get_user_firm_id, verify_statement_access
+from statements.tasks import export_statement_task
 
 
 export_router = APIRouter(tags=["exports"])
@@ -252,6 +255,83 @@ async def create_export(
     )
     db.add(job)
     await db.flush()
+
+    firm_id = await get_user_firm_id(db, current_user)
+    if not firm_id:
+        client = await db.get(Client, stmt.client_id)
+        firm_id = client.firm_id if client else None
+    if not firm_id:
+        raise HTTPException(status_code=404, detail="Statement not found")
+
+    if settings.CELERY_TASK_ALWAYS_EAGER:
+        job_id = f"eager-export-{job.id}"
+        try:
+            result = await export_statement_job(
+                db,
+                job_id=job_id,
+                export_id=job.id,
+                statement_id=statement_id,
+                firm_id=firm_id,
+                fmt=body.format,
+                company_name=body.company_name,
+                bank_ledger_name=body.bank_ledger_name,
+                strict_reviewed_only=body.strict_reviewed_only,
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Export generation failed: {exc}") from exc
+
+        await db.refresh(job)
+        return ExportJobResponse(
+            export_id=job.id,
+            job_id=job_id,
+            statement_id=statement_id,
+            format=job.format,
+            status=job.status,
+            download_url=_signed_download_url(job, current_user),
+            filename=_make_filename(stmt, job.format),
+            expires_at=job.expires_at,
+            created_at=job.created_at,
+            transaction_count=int(result.get("transaction_count") or 0),
+            idempotent=False,
+            progress=100,
+        )
+
+    await db.commit()
+    async_result = export_statement_task.delay(
+        job.id,
+        statement_id,
+        firm_id,
+        body.format,
+        body.company_name,
+        body.bank_ledger_name,
+        body.strict_reviewed_only,
+    )
+    update_job_progress(
+        async_result.id,
+        job_type="export",
+        status="PENDING",
+        stage="queued",
+        progress=0,
+        statement_id=statement_id,
+        export_id=job.id,
+    )
+
+    return ExportJobResponse(
+        export_id=job.id,
+        job_id=async_result.id,
+        statement_id=statement_id,
+        format=job.format,
+        status=job.status,
+        download_url=None,
+        filename=_make_filename(stmt, job.format),
+        expires_at=job.expires_at,
+        created_at=job.created_at,
+        transaction_count=0,
+        idempotent=False,
+        progress=0,
+    )
 
     try:
         payload, transaction_count = await _build_export_content(

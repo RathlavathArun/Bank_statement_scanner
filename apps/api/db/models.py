@@ -128,6 +128,9 @@ class Statement(Base):
 # ─── 8.7 Table: transactions ────────────────────────────────
 class Transaction(Base):
     __tablename__ = "transactions"
+    __table_args__ = (
+        UniqueConstraint("statement_id", "row_number", name="uq_statement_row_number"),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     statement_id = Column(String(36), ForeignKey("statements.id", ondelete="CASCADE"), nullable=False, index=True)

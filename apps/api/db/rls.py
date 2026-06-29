@@ -90,6 +90,10 @@ async def set_rls_context(db: AsyncSession, firm_id: Optional[str]) -> None:
     Uses SET LOCAL so the variable is cleared when the transaction ends —
     no risk of context leaking across pooled connections.
     """
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name == "sqlite":
+        return
+
     if firm_id:
         await db.execute(
             text("SELECT set_config('app.current_firm_id', :fid, true)"),

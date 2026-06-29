@@ -68,6 +68,17 @@ async def _authenticate_user(
     firm_id = membership.firm_id if membership else None
     await set_rls_context(db, firm_id)
 
+    # Attach metadata to Sentry & OpenTelemetry
+    try:
+        import sentry_sdk
+        sentry_sdk.set_user({"id": user.id})
+        if firm_id:
+            sentry_sdk.set_tag("firm_id", firm_id)
+        if role:
+            sentry_sdk.set_tag("role", role)
+    except Exception:  # noqa: BLE001
+        pass
+
     if enforce_mfa and role in {"admin", "owner"}:
         if not user.totp_enabled:
             raise HTTPException(

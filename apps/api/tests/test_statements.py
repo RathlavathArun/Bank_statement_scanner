@@ -12,6 +12,8 @@ db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 db_file.close()
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{db_file.name}"
 os.environ["DEBUG"] = "False"
+os.environ["CELERY_TASK_ALWAYS_EAGER"] = "true"
+os.environ["CLAMAV_ENABLED"] = "false"
 
 from fastapi.testclient import TestClient  # noqa: E402
 

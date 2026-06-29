@@ -17,11 +17,13 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from core.config import settings
 from core.response import ApiResponse
 from core.log_filter import configure_pii_logging
+from core.observability import init_observability
 from db.database import init_db
 from auth.router import router as auth_router
 from auth.totp_router import router as totp_router
 from statements.export_router import export_router
 from statements.router import router as statements_router
+from statements.jobs_router import router as jobs_router
 from statements.admin_router import router as admin_router
 from statements.websocket import ws_router
 
@@ -31,6 +33,8 @@ async def lifespan(app: FastAPI):
     """Application lifecycle — init DB and template manager on startup."""
     # ── Task 5: configure PII-redacting log filter before any other log output
     configure_pii_logging(debug=settings.DEBUG)
+    # ── Tasks 12 & 13: initialize OpenTelemetry tracing and Sentry error tracking
+    init_observability(app=app)
     logging.getLogger(__name__).info("[START] Starting Bank Statement Extraction API...")
 
     print("[START] Starting Bank Statement Extraction API...")
@@ -81,6 +85,7 @@ app.add_middleware(
 
 # ─── Routers ─────────────────────────────────────────────
 app.include_router(statements_router)
+app.include_router(jobs_router)
 app.include_router(admin_router)
 app.include_router(export_router)
 app.include_router(ws_router)

@@ -49,3 +49,6 @@ tfplan
 .traffic_venv/
 AWSCLIV2.pkg
 catboost_info/
+
+# AI-only project context
+.ai/

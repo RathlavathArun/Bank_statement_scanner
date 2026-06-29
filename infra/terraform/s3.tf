@@ -58,6 +58,29 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "documents" {
   }
 }
 
+# Task 11: Delete original uploaded PDFs after 90 days.
+# Processed outputs and exports must use prefixes outside uploads/originals/pdf/.
+resource "aws_s3_bucket_lifecycle_configuration" "documents" {
+  bucket = aws_s3_bucket.documents.id
+
+  rule {
+    id     = "delete-original-uploaded-pdfs-after-90-days"
+    status = "Enabled"
+
+    filter {
+      prefix = "uploads/originals/pdf/"
+    }
+
+    expiration {
+      days = 90
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}
+
 # Enforce encrypted transport — deny any unencrypted (HTTP) requests
 resource "aws_s3_bucket_policy" "documents_tls_only" {
   bucket = aws_s3_bucket.documents.id

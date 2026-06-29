@@ -11,7 +11,10 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
+from core.observability import get_tracer
 from core.pii_masker import mask_for_llm
+
+tracer = get_tracer("bank-statement-scanner")
 from db.models import Transaction
 from statements.llm_tracking import (
     content_hash_for_transaction,
@@ -362,60 +365,63 @@ async def enrich_transactions_with_tracking(
     if not transactions:
         return []
 
-    cached_results: dict[str, EnrichmentResult] = {}
-    cache_misses: list[Transaction] = []
-    hashes_by_id: dict[str, str] = {}
+    with tracer.start_as_current_span("llm_enrichment") as span:
+        span.set_attribute("statement_id", statement_id)
+        span.set_attribute("transaction_count", len(transactions))
+        cached_results: dict[str, EnrichmentResult] = {}
+        cache_misses: list[Transaction] = []
+        hashes_by_id: dict[str, str] = {}
 
-    for transaction in transactions:
-        content_hash = content_hash_for_transaction(transaction)
-        hashes_by_id[transaction.id] = content_hash
-        cache = await get_cache(db, content_hash)
-        if cache:
-            cached_results[transaction.id] = enrichment_from_cache(
-                transaction.id,
-                cache.response_json,
+        for transaction in transactions:
+            content_hash = content_hash_for_transaction(transaction)
+            hashes_by_id[transaction.id] = content_hash
+            cache = await get_cache(db, content_hash)
+            if cache:
+                cached_results[transaction.id] = enrichment_from_cache(
+                    transaction.id,
+                    cache.response_json,
+                )
+                await mark_cache_hit(db, cache, statement_id, transaction.id)
+            else:
+                cache_misses.append(transaction)
+
+        fresh_results = await enrich_transactions(cache_misses)
+        for transaction, result in zip(cache_misses, fresh_results):
+            content_hash = hashes_by_id[transaction.id]
+            prompt_tokens = estimate_tokens(json.dumps(transactions_payload([transaction])))
+            completion_tokens = estimate_tokens(json.dumps(enrichment_cache_payload(result)))
+            cost = (
+                estimate_cost_usd(prompt_tokens, completion_tokens)
+                if result.source == "claude"
+                else Decimal("0.000000")
             )
-            await mark_cache_hit(db, cache, statement_id, transaction.id)
-        else:
-            cache_misses.append(transaction)
+            provider = "anthropic" if result.source == "claude" else "local"
+            model = settings.ANTHROPIC_MODEL if result.source == "claude" else "heuristic-v1"
+            await store_cache(
+                db=db,
+                content_hash=content_hash,
+                provider=provider,
+                model=model,
+                response_json=enrichment_cache_payload(result),
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=cost,
+            )
+            await record_usage(
+                db=db,
+                statement_id=statement_id,
+                transaction_id=transaction.id,
+                provider=provider,
+                model=model,
+                cache_status=result.cache_status,
+                content_hash=content_hash,
+                prompt_tokens=prompt_tokens if result.source == "claude" else 0,
+                completion_tokens=completion_tokens if result.source == "claude" else 0,
+                cost_usd=cost,
+            )
+            cached_results[transaction.id] = result
 
-    fresh_results = await enrich_transactions(cache_misses)
-    for transaction, result in zip(cache_misses, fresh_results):
-        content_hash = hashes_by_id[transaction.id]
-        prompt_tokens = estimate_tokens(json.dumps(transactions_payload([transaction])))
-        completion_tokens = estimate_tokens(json.dumps(enrichment_cache_payload(result)))
-        cost = (
-            estimate_cost_usd(prompt_tokens, completion_tokens)
-            if result.source == "claude"
-            else Decimal("0.000000")
-        )
-        provider = "anthropic" if result.source == "claude" else "local"
-        model = settings.ANTHROPIC_MODEL if result.source == "claude" else "heuristic-v1"
-        await store_cache(
-            db=db,
-            content_hash=content_hash,
-            provider=provider,
-            model=model,
-            response_json=enrichment_cache_payload(result),
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            cost_usd=cost,
-        )
-        await record_usage(
-            db=db,
-            statement_id=statement_id,
-            transaction_id=transaction.id,
-            provider=provider,
-            model=model,
-            cache_status=result.cache_status,
-            content_hash=content_hash,
-            prompt_tokens=prompt_tokens if result.source == "claude" else 0,
-            completion_tokens=completion_tokens if result.source == "claude" else 0,
-            cost_usd=cost,
-        )
-        cached_results[transaction.id] = result
-
-    return [cached_results[transaction.id] for transaction in transactions]
+        return [cached_results[transaction.id] for transaction in transactions]
 
 
 def apply_enrichment(transaction: Transaction, result: EnrichmentResult) -> None:

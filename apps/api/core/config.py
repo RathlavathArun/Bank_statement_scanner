@@ -15,6 +15,9 @@ class Settings(BaseSettings):
 
     # ─── Redis ───────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379/0"
+    CELERY_BROKER_URL: str | None = None
+    CELERY_RESULT_BACKEND: str | None = None
+    CELERY_TASK_ALWAYS_EAGER: bool = False
 
     # Vector memory / Qdrant
     QDRANT_ENABLED: bool = False
@@ -75,6 +78,12 @@ class Settings(BaseSettings):
     #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     TOTP_ENCRYPTION_KEY: str = ""
 
+    # ─── Observability (Phase 2) ────────────────
+    SENTRY_DSN: str | None = None
+    OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
+    OTEL_SERVICE_NAME: str = "bank-statement-scanner"
+    ENVIRONMENT: str = "production"
+
     # ─── App ─────────────────────────────────────
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000
@@ -91,6 +100,14 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
+
+    @property
+    def celery_broker_url(self) -> str:
+        return self.CELERY_BROKER_URL or self.REDIS_URL
+
+    @property
+    def celery_result_backend(self) -> str:
+        return self.CELERY_RESULT_BACKEND or self.REDIS_URL
 
     class Config:
         env_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")

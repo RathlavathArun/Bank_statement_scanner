@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import yaml
 
@@ -82,7 +82,12 @@ TEXT_TRANSACTION_RE = re.compile(
 )
 
 
-def parse_statement(file_path: Path, bank_code: str | None = None, password: str | None = None) -> ParsedStatement:
+def parse_statement(
+    file_path: Path,
+    bank_code: str | None = None,
+    password: str | None = None,
+    on_ocr_progress: Callable[[int, int], None] | None = None,
+) -> ParsedStatement:
     suffix = file_path.suffix.lower()
     template = load_bank_template(bank_code)
 
@@ -90,7 +95,7 @@ def parse_statement(file_path: Path, bank_code: str | None = None, password: str
         return parse_rows(read_csv_rows(file_path), template, source="csv")
 
     if suffix == ".pdf":
-        return parse_pdf(file_path, template, password=password)
+        return parse_pdf(file_path, template, password=password, on_ocr_progress=on_ocr_progress)
 
     if suffix in (".xlsx", ".xls"):
         return parse_rows(parse_excel(file_path), template, source="excel")
@@ -179,7 +184,12 @@ def parse_excel(file_path: Path) -> list[list[str]]:
     raise StatementParserError(f"Unsupported Excel format: {suffix}")
 
 
-def parse_pdf(file_path: Path, template: dict[str, Any], password: str | None = None) -> ParsedStatement:
+def parse_pdf(
+    file_path: Path,
+    template: dict[str, Any],
+    password: str | None = None,
+    on_ocr_progress: Callable[[int, int], None] | None = None,
+) -> ParsedStatement:
     try:
         import pdfplumber
     except ImportError as exc:
@@ -219,7 +229,7 @@ def parse_pdf(file_path: Path, template: dict[str, Any], password: str | None = 
     text = "\n".join(text_pages)
     if not text.strip():
         # ── OCR fallback for scanned / image-only PDFs ──────────
-        return _ocr_fallback(file_path, template)
+        return _ocr_fallback(file_path, template, on_ocr_progress=on_ocr_progress)
 
     text_transactions = parse_text_transactions(text, template)
     if text_transactions:
@@ -234,7 +244,7 @@ def parse_pdf(file_path: Path, template: dict[str, Any], password: str | None = 
 
     # Last resort – try OCR in case the text was just page headers / footers
     try:
-        return _ocr_fallback(file_path, template)
+        return _ocr_fallback(file_path, template, on_ocr_progress=on_ocr_progress)
     except Exception:
         raise StatementParserError(
             "PDF uploaded successfully, but no transaction rows matched the current bank template."
@@ -341,7 +351,11 @@ def _auto_detect_ocr_columns(
     return result
 
 
-def _ocr_fallback(file_path: Path, template: dict[str, Any]) -> ParsedStatement:
+def _ocr_fallback(
+    file_path: Path,
+    template: dict[str, Any],
+    on_ocr_progress: Callable[[int, int], None] | None = None,
+) -> ParsedStatement:
     """Run OCR on a scanned PDF and convert the result to a ``ParsedStatement``.
 
     Steps:
@@ -354,7 +368,7 @@ def _ocr_fallback(file_path: Path, template: dict[str, Any]) -> ParsedStatement:
     from statements.ocr_worker import process_scanned_pdf
 
     try:
-        ocr_result = process_scanned_pdf(file_path)
+        ocr_result = process_scanned_pdf(file_path, on_progress=on_ocr_progress)
     except RuntimeError as exc:
         raise StatementParserError(str(exc)) from exc
 

@@ -18,6 +18,10 @@ from __future__ import annotations
 import abc
 import logging
 import shutil
+from core.observability import get_tracer
+
+logger = logging.getLogger(__name__)
+tracer = get_tracer("bank-statement-scanner")
 import statistics
 import time
 import uuid
@@ -973,61 +977,64 @@ def process_scanned_pdf(
     """
     from core.config import settings
 
-    t_total_start = time.perf_counter()
+    with tracer.start_as_current_span("ocr_extract") as span:
+        span.set_attribute("file_name", file_path.name)
+        t_total_start = time.perf_counter()
 
-    engine = get_ocr_engine()
-    engine_name = engine.__class__.__name__
-    logger.info(
-        "═══ OCR START ═══ file=%s  engine=%s  OCR_ENGINE_setting=%s",
-        file_path.name, engine_name, settings.OCR_ENGINE,
-    )
+        engine = get_ocr_engine()
+        engine_name = engine.__class__.__name__
+        span.set_attribute("engine_name", engine_name)
+        logger.info(
+            "═══ OCR START ═══ file=%s  engine=%s  OCR_ENGINE_setting=%s",
+            file_path.name, engine_name, settings.OCR_ENGINE,
+        )
 
-    # If we're in auto mode and a Textract engine was chosen, wrap the call so
-    # that any runtime failure (subscription issues, permission errors, network
-    # problems, etc.) gracefully falls back to local Tesseract.
-    is_textract_engine = isinstance(engine, (TextractOCREngine, TextractAsyncOCREngine))
-    if is_textract_engine and settings.OCR_ENGINE.lower().strip() == "auto":
-        try:
-            t_engine_start = time.perf_counter()
-            result = engine.extract(file_path, on_progress=on_progress)
-            t_engine = time.perf_counter() - t_engine_start
-            logger.info(
-                "═══ OCR END ═══ engine=%s  pages=%d  rows=%d  elapsed=%.2fs",
-                engine_name, result.pages_processed, len(result.rows), t_engine,
-            )
-            return result
-        except Exception as exc:
-            logger.warning(
-                "Textract FAILED for %s after %.2fs — falling back to local Tesseract OCR.\n"
-                "  Error: %s",
-                file_path.name,
-                time.perf_counter() - t_total_start,
-                exc,
-            )
-            if shutil.which("tesseract"):
-                fallback = TesseractOCREngine()
+        # If we're in auto mode and a Textract engine was chosen, wrap the call so
+        # that any runtime failure (subscription issues, permission errors, network
+        # problems, etc.) gracefully falls back to local Tesseract.
+        is_textract_engine = isinstance(engine, (TextractOCREngine, TextractAsyncOCREngine))
+        if is_textract_engine and settings.OCR_ENGINE.lower().strip() == "auto":
+            try:
+                t_engine_start = time.perf_counter()
+                result = engine.extract(file_path, on_progress=on_progress)
+                t_engine = time.perf_counter() - t_engine_start
                 logger.info(
-                    "Retrying %s with TesseractOCREngine (fallback).",
-                    file_path.name,
-                )
-                t_fallback_start = time.perf_counter()
-                result = fallback.extract(file_path, on_progress=on_progress)
-                t_fallback = time.perf_counter() - t_fallback_start
-                logger.info(
-                    "═══ OCR END (Tesseract fallback) ═══ pages=%d  rows=%d  elapsed=%.2fs",
-                    result.pages_processed, len(result.rows), t_fallback,
+                    "═══ OCR END ═══ engine=%s  pages=%d  rows=%d  elapsed=%.2fs",
+                    engine_name, result.pages_processed, len(result.rows), t_engine,
                 )
                 return result
-            raise RuntimeError(
-                f"Textract failed ({exc}) and no local Tesseract binary was found. "
-                "Install Tesseract: brew install tesseract / apt install tesseract-ocr"
-            ) from exc
+            except Exception as exc:
+                logger.warning(
+                    "Textract FAILED for %s after %.2fs — falling back to local Tesseract OCR.\n"
+                    "  Error: %s",
+                    file_path.name,
+                    time.perf_counter() - t_total_start,
+                    exc,
+                )
+                if shutil.which("tesseract"):
+                    fallback = TesseractOCREngine()
+                    logger.info(
+                        "Retrying %s with TesseractOCREngine (fallback).",
+                        file_path.name,
+                    )
+                    t_fallback_start = time.perf_counter()
+                    result = fallback.extract(file_path, on_progress=on_progress)
+                    t_fallback = time.perf_counter() - t_fallback_start
+                    logger.info(
+                        "═══ OCR END (Tesseract fallback) ═══ pages=%d  rows=%d  elapsed=%.2fs",
+                        result.pages_processed, len(result.rows), t_fallback,
+                    )
+                    return result
+                raise RuntimeError(
+                    f"Textract failed ({exc}) and no local Tesseract binary was found. "
+                    "Install Tesseract: brew install tesseract / apt install tesseract-ocr"
+                ) from exc
 
-    t_engine_start = time.perf_counter()
-    result = engine.extract(file_path, on_progress=on_progress)
-    t_engine = time.perf_counter() - t_engine_start
-    logger.info(
-        "═══ OCR END ═══ engine=%s  pages=%d  rows=%d  elapsed=%.2fs",
-        engine_name, result.pages_processed, len(result.rows), t_engine,
-    )
-    return result
+        t_engine_start = time.perf_counter()
+        result = engine.extract(file_path, on_progress=on_progress)
+        t_engine = time.perf_counter() - t_engine_start
+        logger.info(
+            "═══ OCR END ═══ engine=%s  pages=%d  rows=%d  elapsed=%.2fs",
+            engine_name, result.pages_processed, len(result.rows), t_engine,
+        )
+        return result

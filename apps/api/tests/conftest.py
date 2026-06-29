@@ -15,6 +15,8 @@ db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 db_file.close()
 os.environ.setdefault("DATABASE_URL", f"sqlite+aiosqlite:///{db_file.name}")
 os.environ.setdefault("DEBUG", "False")
+os.environ.setdefault("CELERY_TASK_ALWAYS_EAGER", "true")
+os.environ.setdefault("CLAMAV_ENABLED", "false")
 
 from db.database import Base, get_db  # noqa: E402
 from db.models import User  # noqa: E402

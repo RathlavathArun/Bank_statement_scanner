@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import asyncio
 import pytest
+import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from core.config import settings
+from db.database import Base
 from db.models import Firm, User, FirmMember, Client, Statement
 from db.rls import set_rls_context
 from auth.service import hash_password
@@ -31,19 +33,30 @@ def event_loop():
     loop.close()
 
 
-@pytest.fixture(scope="module")
+@pytest_asyncio.fixture(scope="module")
 async def engine():
     eng = create_async_engine(settings.DATABASE_URL, echo=False, future=True)
+    if eng.dialect.name != "sqlite":
+        async with eng.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            from db.rls import apply_rls_policies
+            await apply_rls_policies(conn)
     yield eng
     await eng.dispose()
 
 
-@pytest.fixture(scope="module")
+@pytest_asyncio.fixture(scope="module", autouse=True)
+async def check_postgres(engine):
+    if engine.dialect.name == "sqlite":
+        pytest.skip("RLS tests require PostgreSQL database", allow_module_level=True)
+
+
+@pytest_asyncio.fixture(scope="module")
 async def session_factory(engine):
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
-@pytest.fixture(scope="module")
+@pytest_asyncio.fixture(scope="module")
 async def two_firms(session_factory):
     """Create two isolated firms with one client and one statement each."""
     async with session_factory() as db:

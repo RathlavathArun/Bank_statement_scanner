@@ -109,6 +109,34 @@ services:
       retries: 5
       start_period: 120s  # allow time for signature DB download on first boot
 
+  # Celery worker for parser/OCR/LLM/export background jobs
+  celery-worker:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    container_name: bse_celery_worker
+    restart: unless-stopped
+    command: celery -A core.celery_app.celery_app worker --loglevel=INFO
+    environment:
+      DATABASE_URL: postgresql+asyncpg://bse_admin:${POSTGRES_PASSWORD:-bse_secret_2026}@postgres:5432/${POSTGRES_DB:-bank_statements}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+      S3_BUCKET: bank-statements
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: 3310
+      DEBUG: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   redis_data:

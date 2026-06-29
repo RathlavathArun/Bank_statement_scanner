@@ -250,6 +250,25 @@ export default function ReviewPage() {
       });
       if (!res.ok) throw new Error("Enrichment failed");
       const data = (await res.json()).data;
+      if (data.job_id && data.status === "PENDING") {
+        for (let attempt = 0; attempt < 90; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 2000));
+          const jobRes = await fetch(`${API}/v1/jobs/${data.job_id}`, {
+            headers: authHeaders(),
+          });
+          if (!jobRes.ok) continue;
+          const jobPayload = (await jobRes.json()).data || {};
+          if (jobPayload.status === "FAILED") {
+            throw new Error(jobPayload.detail || "Enrichment failed");
+          }
+          if (jobPayload.status === "COMPLETED") {
+            addToast("success", "Enrichment complete");
+            await loadTransactions();
+            return;
+          }
+        }
+        throw new Error("Enrichment is still running. Please refresh shortly.");
+      }
       addToast("success", `Enriched ${data.updated} transactions`);
       await loadTransactions();
     } catch (error) {
