@@ -167,3 +167,22 @@
   60%  { opacity: 1; }
   100% { opacity: 0; }
 }
+
+/* Custom AG Grid Dark Theme Overrides */
+.ag-theme-quartz-dark {
+  --ag-background-color: transparent;
+  --ag-header-background-color: rgb(0 0 0 / 0.4);
+  --ag-row-border-color: rgb(255 255 255 / 0.1);
+  --ag-header-column-separator-color: transparent;
+  --ag-font-family: inherit;
+  --ag-font-size: 14px;
+  --ag-data-color: #d1d5db;
+  --ag-header-foreground-color: #d1d5db;
+  --ag-row-hover-color: rgb(255 255 255 / 0.05);
+  --ag-selected-row-background-color: rgb(59 130 246 / 0.1);
+  --ag-borders: none;
+  --ag-border-color: rgb(255 255 255 / 0.1);
+}
+.ag-theme-quartz-dark .ag-header {
+  border-bottom: 1px solid var(--ag-border-color);
+}

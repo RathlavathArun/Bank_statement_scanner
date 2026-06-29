@@ -1,13 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useCallback, useRef } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import {
-  createColumnHelper,
-  flexRender,
-  getCoreRowModel,
-  useReactTable,
-} from "@tanstack/react-table";
+import { AgGridReact } from "ag-grid-react";
+import { ColDef, RowClassParams, RowClickedEvent, SelectionChangedEvent } from "ag-grid-community";
+import "ag-grid-community/styles/ag-grid.css";
+import "ag-grid-community/styles/ag-theme-quartz.css";
 import { type BboxCoords } from "@/components/PDFViewer";
 
 interface Transaction {
@@ -39,14 +37,11 @@ interface TransactionTableProps {
   onPageChange: (p: number) => void;
   onPageSizeChange: (size: number) => void;
   onBulkUpdate?: (txIds: string[], changes: Partial<Transaction>) => void;
-  /** Called when the user clicks a transaction row to jump the PDF to its source page. */
   onRowClick?: (txId: string, pageNumber: number | null, bbox: BboxCoords | null) => void;
 }
 
 type FilterType = "ALL" | "DEBIT" | "CREDIT";
 type EditableField = "narration" | "confirmed_ledger";
-
-const columnHelper = createColumnHelper<Transaction>();
 
 function amountValue(value: number | string | null | undefined) {
   if (typeof value === "number") return value;
@@ -54,7 +49,6 @@ function amountValue(value: number | string | null | undefined) {
   return 0;
 }
 
-/** Converts yyyy-mm-dd → dd-mm-yyyy for display */
 function formatDate(raw: string | undefined): string {
   if (!raw) return "";
   const parts = raw.split("-");
@@ -85,7 +79,7 @@ export function TransactionTable({
   const [dateTo, setDateTo] = useState("");
   const [sortBy, setSortBy] = useState<"date" | "narration">("date");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
-  const [rowSelection, setRowSelection] = useState({});
+  const [rowSelection, setRowSelection] = useState<string[]>([]);
   const [bulkLedger, setBulkLedger] = useState("");
   const [ledgerSuggestions, setLedgerSuggestions] = useState<{ ledger_name: string; score: number }[]>([]);
   const [activeRowId, setActiveRowId] = useState<string | null>(null);
@@ -127,7 +121,6 @@ export function TransactionTable({
     setEditingCell(`${txId}:${field}`);
     setEditValue(value || "");
     if (field === "confirmed_ledger") {
-      // Fetch ledger suggestions when user begins editing ledger cell
       setLedgerSuggestions([]);
       fetch(`${API}/v1/statements/${statementId}/transactions/${txId}/ledger-suggestions`)
         .then((res) => res.ok ? res.json() : null)
@@ -159,29 +152,39 @@ export function TransactionTable({
   const totalCredit = filtered.reduce((sum, tx) => sum + amountValue(tx.credit), 0);
   const unledgered = filtered.filter((tx) => !tx.confirmed_ledger).length;
 
-  const columns = useMemo(
+  const columns: ColDef<Transaction>[] = useMemo(
     () => [
-      columnHelper.display({
-        id: "select",
-        header: ({ table }) => (
-          <input
-            type="checkbox"
-            checked={table.getIsAllPageRowsSelected()}
-            onChange={table.getToggleAllPageRowsSelectedHandler()}
-            className="rounded"
-          />
-        ),
-        cell: ({ row }) => (
-          <input
-            type="checkbox"
-            checked={row.getIsSelected()}
-            onChange={row.getToggleSelectedHandler()}
-            className="rounded"
-          />
-        ),
-      }),
-      columnHelper.accessor("txn_date", {
-        header: () => (
+      {
+        headerCheckboxSelection: true,
+        checkboxSelection: true,
+        width: 50,
+        sortable: false,
+        suppressHeaderMenuButton: true,
+        pinned: 'left'
+      },
+      {
+        field: "txn_date",
+        headerName: "Date",
+        width: 120,
+        sortable: false,
+        cellRenderer: (params: any) => {
+          const tx = params.data;
+          if (!tx) return null;
+          return (
+            <div className={`flex flex-col justify-center h-full gap-0.5 ${tx.is_ignored ? "line-through text-gray-500" : "text-gray-300"}`}>
+              {formatDate(tx.txn_date)}
+              {tx.page_number && (
+                <span
+                  className="inline-flex w-fit items-center gap-0.5 rounded bg-indigo-500/20 px-1.5 py-0.5 text-[10px] text-indigo-300 no-underline"
+                  title={`Source: PDF page ${tx.page_number}`}
+                >
+                  p.{tx.page_number}
+                </span>
+              )}
+            </div>
+          );
+        },
+        headerComponent: () => (
           <button
             onClick={() => {
               setSortBy("date");
@@ -194,17 +197,24 @@ export function TransactionTable({
               sortDir === "asc" ? <ChevronUp size={14} /> : <ChevronDown size={14} />
             )}
           </button>
-        ),
-        cell: (info) => <span className="text-gray-300">{formatDate(info.getValue())}</span>,
-      }),
-      columnHelper.accessor("narration", {
-        header: "Narration",
-        cell: ({ row, getValue }) => {
-          const tx = row.original;
+        )
+      },
+      {
+        field: "narration",
+        headerName: "Narration",
+        flex: 1,
+        minWidth: 200,
+        cellRenderer: (params: any) => {
+          const tx = params.data;
+          if (!tx) return null;
+          const isIgnoredClass = tx.is_ignored ? "line-through text-gray-500" : "text-gray-300 hover:text-white";
           return (
             <div
-              className="cursor-pointer text-gray-300 hover:text-white"
-              onClick={() => startEdit(tx.id, "narration", getValue())}
+              className={`flex flex-col justify-center h-full cursor-pointer ${isIgnoredClass}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                startEdit(tx.id, "narration", tx.narration);
+              }}
             >
               {editingCell === `${tx.id}:narration` ? (
                 <input
@@ -214,13 +224,14 @@ export function TransactionTable({
                   onChange={(event) => setEditValue(event.target.value)}
                   onBlur={() => saveEdit(tx.id, "narration")}
                   onKeyDown={(event) => handleKeyDown(event, tx.id, "narration")}
-                  className="w-full rounded border border-white/20 bg-white/10 px-2 py-1 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-full rounded border border-white/20 bg-black/50 px-2 py-1 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                 />
               ) : (
-                <div>
-                  <span title={getValue()}>{getValue()?.substring(0, 30)}</span>
-                  {tx.narration_clean && tx.narration_clean !== getValue() && (
-                    <p className="text-xs text-indigo-400 truncate" title={tx.narration_clean}>
+                <div className="flex flex-col justify-center leading-tight">
+                  <span title={tx.narration}>{tx.narration?.substring(0, 30)}</span>
+                  {tx.narration_clean && tx.narration_clean !== tx.narration && (
+                    <p className={`text-[10px] truncate ${tx.is_ignored ? "text-gray-500" : "text-indigo-400"}`} title={tx.narration_clean}>
                       {tx.narration_clean.substring(0, 28)}
                     </p>
                   )}
@@ -229,60 +240,84 @@ export function TransactionTable({
             </div>
           );
         },
-      }),
-      columnHelper.display({
-        id: "amount",
-        header: () => <span className="block text-right">Amount</span>,
-        cell: ({ row }) => {
-          const tx = row.original;
+      },
+      {
+        headerName: "Amount",
+        width: 120,
+        type: "rightAligned",
+        cellRenderer: (params: any) => {
+          const tx = params.data;
+          if (!tx) return null;
           const amount = tx.debit || tx.credit;
           const isDebit = !!tx.debit;
+          const colorClass = isDebit ? "text-red-400" : "text-green-400";
           return (
-            <span className={`block text-right font-medium ${isDebit ? "text-red-400" : "text-green-400"}`}>
+            <span className={`block font-medium w-full text-right ${tx.is_ignored ? "line-through text-gray-500" : colorClass}`}>
               {isDebit ? "-" : "+"}₹
               {amountValue(amount).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
             </span>
           );
         },
-      }),
-      columnHelper.accessor("balance", {
-        header: () => <span className="block text-right">Balance</span>,
-        cell: (info) => (
-          <span className="block text-right text-gray-300">
-            ₹{amountValue(info.getValue()).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-          </span>
-        ),
-      }),
-      columnHelper.accessor("payment_mode", {
-        header: "Mode",
-        cell: (info) => <span className="text-xs text-gray-400">{info.getValue() || "-"}</span>,
-      }),
-      columnHelper.accessor("confirmed_ledger", {
-        header: "Ledger",
-        cell: ({ row, getValue }) => {
-          const tx = row.original;
+      },
+      {
+        field: "balance",
+        headerName: "Balance",
+        width: 120,
+        type: "rightAligned",
+        cellRenderer: (params: any) => {
+          const tx = params.data;
+          if (!tx) return null;
+          return (
+            <span className={`block w-full text-right ${tx.is_ignored ? "line-through text-gray-500" : "text-gray-300"}`}>
+              ₹{amountValue(tx.balance).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+            </span>
+          );
+        },
+      },
+      {
+        field: "payment_mode",
+        headerName: "Mode",
+        width: 100,
+        cellRenderer: (params: any) => {
+          const tx = params.data;
+          if (!tx) return null;
+          return <span className={`text-xs ${tx.is_ignored ? "line-through text-gray-600" : "text-gray-400"}`}>{tx.payment_mode || "-"}</span>;
+        },
+      },
+      {
+        field: "confirmed_ledger",
+        headerName: "Ledger",
+        width: 180,
+        cellRenderer: (params: any) => {
+          const tx = params.data;
+          if (!tx) return null;
           const isEditing = editingCell === `${tx.id}:confirmed_ledger`;
           return (
-            <div className="relative cursor-pointer text-gray-300 hover:text-white">
+            <div className={`relative flex flex-col justify-center h-full cursor-pointer ${tx.is_ignored ? "line-through text-gray-500" : "text-gray-300 hover:text-white"}`}>
               {isEditing ? (
-                <div>
+                <div onClick={(e) => e.stopPropagation()}>
                   <input
                     autoFocus
                     type="text"
                     value={editValue}
                     onChange={(event) => setEditValue(event.target.value)}
-                    onBlur={() => saveEdit(tx.id, "confirmed_ledger")}
+                    onBlur={(e) => {
+                       if (e.relatedTarget && (e.relatedTarget as HTMLElement).closest('.ledger-suggestion-dropdown')) return;
+                       saveEdit(tx.id, "confirmed_ledger");
+                    }}
                     onKeyDown={(event) => handleKeyDown(event, tx.id, "confirmed_ledger")}
-                    className="w-full rounded border border-white/20 bg-white/10 px-2 py-1 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    className="w-full rounded border border-white/20 bg-black/50 px-2 py-1 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   />
                   {ledgerSuggestions.length > 0 && (
-                    <ul className="absolute z-50 mt-1 w-56 rounded-lg border border-white/10 bg-slate-900 shadow-xl text-xs">
+                    <ul className="ledger-suggestion-dropdown absolute z-50 mt-1 w-56 rounded-lg border border-white/10 bg-slate-900 shadow-xl text-xs">
                       {ledgerSuggestions.slice(0, 5).map((s) => (
                         <li
                           key={s.ledger_name}
+                          tabIndex={0}
                           className="flex items-center justify-between px-3 py-1.5 hover:bg-white/10 cursor-pointer"
                           onMouseDown={(e) => {
                             e.preventDefault();
+                            e.stopPropagation();
                             setEditValue(s.ledger_name);
                             onUpdate(tx.id, { confirmed_ledger: s.ledger_name });
                             setEditingCell(null);
@@ -295,12 +330,13 @@ export function TransactionTable({
                       ))}
                     </ul>
                   )}
-                  {tx.suggested_ledger && !getValue() && (
-                    <p className="mt-1 text-xs text-indigo-400">
+                  {tx.suggested_ledger && !tx.confirmed_ledger && (
+                    <p className="mt-1 text-[10px] text-indigo-400 leading-none">
                       AI: <button
                         className="hover:text-indigo-300 underline"
                         onMouseDown={(e) => {
                           e.preventDefault();
+                          e.stopPropagation();
                           setEditValue(tx.suggested_ledger!);
                           onUpdate(tx.id, { confirmed_ledger: tx.suggested_ledger });
                           setEditingCell(null);
@@ -310,93 +346,158 @@ export function TransactionTable({
                   )}
                 </div>
               ) : (
-                <div onClick={() => startEdit(tx.id, "confirmed_ledger", getValue())}>
-                  <span>{getValue() || <span className="text-gray-500 italic text-xs">click to assign</span>}</span>
-                  {!getValue() && tx.suggested_ledger && (
-                    <p className="text-xs text-indigo-400 truncate">{tx.suggested_ledger}</p>
+                <div onClick={(e) => { e.stopPropagation(); startEdit(tx.id, "confirmed_ledger", tx.confirmed_ledger); }}>
+                  <span className="leading-tight block">{tx.confirmed_ledger || <span className="text-gray-500 italic text-xs">click to assign</span>}</span>
+                  {!tx.confirmed_ledger && tx.suggested_ledger && (
+                    <p className={`text-[10px] truncate leading-none mt-0.5 ${tx.is_ignored ? "text-gray-500" : "text-indigo-400"}`}>{tx.suggested_ledger}</p>
                   )}
                 </div>
               )}
             </div>
           );
         },
-      }),
-      columnHelper.accessor("confidence", {
-        header: () => <span className="block text-center">Conf.</span>,
-        cell: (info) => {
-          const val = Number(info.getValue() || 0);
+      },
+      {
+        field: "confidence",
+        headerName: "Conf.",
+        width: 80,
+        cellRenderer: (params: any) => {
+          const tx = params.data;
+          if (!tx) return null;
+          const val = Number(tx.confidence || 0);
           if (!val) return <span className="block text-center text-xs text-gray-400">-</span>;
           
           let badgeClass = "bg-red-500/20 text-red-400 border-red-500/30";
           if (val >= 0.8) badgeClass = "bg-green-500/20 text-green-400 border-green-500/30";
           else if (val >= 0.5) badgeClass = "bg-yellow-500/20 text-yellow-400 border-yellow-500/30";
           
+          if (tx.is_ignored) badgeClass += " opacity-50 grayscale";
+          
           return (
-            <span className={`inline-block text-center text-xs px-2 py-0.5 rounded border ${badgeClass}`}>
-              {Math.round(val * 100)}%
-            </span>
+            <div className="flex items-center justify-center h-full">
+              <span className={`inline-block text-[10px] px-1.5 py-0.5 rounded border leading-none ${badgeClass}`}>
+                {Math.round(val * 100)}%
+              </span>
+            </div>
           );
         },
-      }),
-      columnHelper.accessor("ocr_confidence", {
-        header: () => <span className="block text-center">OCR</span>,
-        cell: (info) => {
-          const val = Number(info.getValue() || 0);
+      },
+      {
+        field: "ocr_confidence",
+        headerName: "OCR",
+        width: 80,
+        cellRenderer: (params: any) => {
+          const tx = params.data;
+          if (!tx) return null;
+          const val = Number(tx.ocr_confidence || 0);
           if (!val) return <span className="block text-center text-xs text-gray-500">—</span>;
 
           let badgeClass = "bg-red-500/20 text-red-300 border-red-500/30";
           let icon = "⚠️";
-          let label = "Low";
           if (val >= 0.85) {
             badgeClass = "bg-emerald-500/20 text-emerald-300 border-emerald-500/30";
             icon = "✓";
-            label = "High";
           } else if (val >= 0.7) {
             badgeClass = "bg-amber-500/20 text-amber-300 border-amber-500/30";
             icon = "~";
-            label = "Med";
           }
-
-          const tx = info.row.original;
+          
+          if (tx.is_ignored) badgeClass += " opacity-50 grayscale";
 
           return (
-            <span
-              className={`inline-flex items-center gap-1 text-center text-xs px-2 py-0.5 rounded border cursor-help ${badgeClass}`}
-              title={`OCR confidence: ${Math.round(val * 100)}%${tx.page_number ? ` (page ${tx.page_number})` : ""}\n${val < 0.7 ? "⚠ Red-flagged: manual review recommended" : val < 0.85 ? "⚡ Medium confidence: verify key fields" : "✓ High confidence"}`}
-            >
-              <span>{icon}</span>
-              <span>{Math.round(val * 100)}%</span>
-            </span>
+            <div className="flex items-center justify-center h-full">
+              <span
+                className={`inline-flex items-center justify-center gap-1 text-[10px] px-1.5 py-0.5 rounded border cursor-help leading-none ${badgeClass}`}
+                title={`OCR confidence: ${Math.round(val * 100)}%${tx.page_number ? ` (page ${tx.page_number})` : ""}\n${val < 0.7 ? "⚠ Red-flagged: manual review recommended" : val < 0.85 ? "⚡ Medium confidence: verify key fields" : "✓ High confidence"}`}
+              >
+                <span>{icon}</span>
+                <span>{Math.round(val * 100)}%</span>
+              </span>
+            </div>
           );
         },
-      }),
-      columnHelper.accessor("is_ignored", {
-        header: () => <span className="block text-center text-xs text-gray-400" title="Ignore this transaction (e.g. bank charges, internal transfers)">Ignore</span>,
-        cell: ({ row, getValue }) => (
-          <span className="block text-center">
-            <input
-              type="checkbox"
-              title={getValue() ? "Unignore transaction" : "Mark transaction as ignored"}
-              checked={getValue() || false}
-              onChange={(event) => onUpdate(row.original.id, { is_ignored: event.target.checked })}
-              className="rounded cursor-pointer accent-gray-500"
-            />
-          </span>
+      },
+      {
+        field: "is_ignored",
+        headerName: "Ignore",
+        width: 80,
+        headerComponent: () => (
+          <span className="block text-center text-xs text-gray-400 w-full" title="Ignore this transaction (e.g. bank charges, internal transfers)">Ignore</span>
         ),
-      }),
+        cellRenderer: (params: any) => {
+          const tx = params.data;
+          if (!tx) return null;
+          return (
+            <div className="flex items-center justify-center h-full">
+              <input
+                type="checkbox"
+                title={tx.is_ignored ? "Unignore transaction" : "Mark transaction as ignored"}
+                checked={tx.is_ignored || false}
+                onChange={(event) => {
+                  onUpdate(tx.id, { is_ignored: event.target.checked });
+                }}
+                onClick={(e) => e.stopPropagation()}
+                className="rounded cursor-pointer accent-gray-500"
+              />
+            </div>
+          );
+        },
+      },
     ],
-    [editValue, editingCell, onUpdate, sortBy, sortDir]
+    [editValue, editingCell, onUpdate, sortBy, sortDir, ledgerSuggestions]
   );
 
-  const table = useReactTable({
-    data: filtered,
-    columns,
-    state: { rowSelection },
-    enableRowSelection: true,
-    onRowSelectionChange: setRowSelection,
-    getRowId: (row) => row.id,
-    getCoreRowModel: getCoreRowModel(),
-  });
+  const getRowClass = useCallback((params: RowClassParams<Transaction>) => {
+    const tx = params.data;
+    if (!tx) return "";
+    const conf = Number(tx.confidence || 1);
+    const ocrConf = Number(tx.ocr_confidence || 0);
+    
+    let classes = ["!border-b", "!border-white/10", "transition-colors"];
+    
+    if (tx.is_ignored) {
+      classes.push("!opacity-40", "!grayscale", "!bg-transparent", "!border-l-4", "!border-l-gray-600/50");
+    } else if (ocrConf > 0 && ocrConf < 0.7) {
+      classes.push("!bg-red-500/10", "!border-l-4", "!border-l-red-500");
+    } else if (ocrConf > 0 && ocrConf < 0.85) {
+      classes.push("!bg-amber-500/5", "!border-l-4", "!border-l-amber-500");
+    } else if (!tx.confirmed_ledger) {
+      classes.push("!bg-red-500/5");
+    } else if (conf < 0.5) {
+      classes.push("!bg-red-500/10");
+    } else if (conf < 0.8) {
+      classes.push("!bg-yellow-500/10");
+    }
+
+    if (activeRowId === tx.id) {
+      classes.push("!ring-1", "!ring-inset", "!ring-amber-400/60", "!bg-amber-500/20");
+    }
+    if (onRowClick && tx.page_number) {
+      classes.push("cursor-pointer");
+    }
+    
+    return classes.join(" ");
+  }, [activeRowId, onRowClick]);
+
+  const handleRowClick = useCallback((e: RowClickedEvent<Transaction>) => {
+    const tx = e.data;
+    if (!tx) return;
+    
+    // Ignore clicks on inputs or buttons
+    const target = e.event?.target as HTMLElement;
+    if (target?.closest("input, button, select, a, .ag-selection-checkbox")) return;
+
+    if (onRowClick) {
+      setActiveRowId(tx.id);
+      onRowClick(tx.id, tx.page_number ?? null, tx.bbox ?? null);
+    }
+  }, [onRowClick]);
+
+  const handleSelectionChanged = useCallback((e: SelectionChangedEvent<Transaction>) => {
+    const selectedNodes = e.api.getSelectedNodes();
+    const selectedIds = selectedNodes.map(node => node.data?.id).filter(Boolean) as string[];
+    setRowSelection(selectedIds);
+  }, []);
 
   if (loading) {
     return (
@@ -457,10 +558,10 @@ export function TransactionTable({
         </div>
       </div>
 
-      {Object.keys(rowSelection).length > 0 && onBulkUpdate && (
+      {rowSelection.length > 0 && onBulkUpdate && (
         <div className="flex items-center gap-3 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
           <span className="text-sm font-medium text-blue-200">
-            {Object.keys(rowSelection).length} selected
+            {rowSelection.length} selected
           </span>
           <input
             type="text"
@@ -471,9 +572,7 @@ export function TransactionTable({
           />
           <button
             onClick={() => {
-              const selectedIds = Object.keys(rowSelection);
-              onBulkUpdate(selectedIds, { confirmed_ledger: bulkLedger });
-              setRowSelection({});
+              onBulkUpdate(rowSelection, { confirmed_ledger: bulkLedger });
               setBulkLedger("");
             }}
             disabled={!bulkLedger}
@@ -484,99 +583,24 @@ export function TransactionTable({
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-lg border border-white/10">
-        <table className="w-full text-sm">
-          <thead>
-            {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id} className="border-b border-white/10 bg-black/40">
-                {headerGroup.headers.map((header) => (
-                  <th key={header.id} className="px-4 py-2 text-left font-medium text-gray-300">
-                    {header.isPlaceholder
-                      ? null
-                      : flexRender(header.column.columnDef.header, header.getContext())}
-                  </th>
-                ))}
-              </tr>
-            ))}
-          </thead>
-          <tbody>
-            {table.getRowModel().rows.length === 0 ? (
-              <tr>
-                <td colSpan={columns.length} className="h-32 text-center text-gray-400">
-                  No transactions found.
-                </td>
-              </tr>
-            ) : (
-              table.getRowModel().rows.map((row) => {
-                const tx = row.original;
-                const conf = Number(tx.confidence || 1);
-                const ocrConf = Number(tx.ocr_confidence || 0);
-
-                // Determine row class based on confidence and OCR confidence
-                let rowClass = "";
-                let borderLeft = "";
-
-                // OCR confidence takes priority for flagging
-                if (tx.is_ignored) {
-                  rowClass = "opacity-40 grayscale bg-transparent";
-                  borderLeft = "border-l-4 border-l-gray-600/50";
-                } else if (ocrConf > 0 && ocrConf < 0.7) {
-                  rowClass = "bg-red-500/10";
-                  borderLeft = "border-l-4 border-l-red-500";
-                } else if (ocrConf > 0 && ocrConf < 0.85) {
-                  rowClass = "bg-amber-500/5";
-                  borderLeft = "border-l-4 border-l-amber-500";
-                } else if (!tx.confirmed_ledger) {
-                  rowClass = "bg-red-500/5";
-                } else if (conf < 0.5) {
-                  rowClass = "bg-red-500/10";
-                } else if (conf < 0.8) {
-                  rowClass = "bg-yellow-500/10";
-                }
-
-                return (
-                  <tr
-                    key={row.id}
-                    data-testid="transaction-row"
-                    onClick={(e) => {
-                      // Don't fire if user clicked on an input/button/select (editing)
-                      const target = e.target as HTMLElement;
-                      if (target.closest("input, button, select, a")) return;
-                      if (onRowClick) {
-                        setActiveRowId(tx.id);
-                        onRowClick(tx.id, tx.page_number ?? null, tx.bbox ?? null);
-                      }
-                    }}
-                    className={`border-b border-white/10 transition-colors hover:bg-white/5 ${rowClass} ${borderLeft} ${
-                      activeRowId === tx.id ? "ring-1 ring-inset ring-amber-400/60 bg-amber-500/10" : ""
-                    } ${onRowClick && tx.page_number ? "cursor-pointer" : ""}`}
-                  >
-                    {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className={`px-4 py-2 ${tx.is_ignored && cell.column.id !== "is_ignored" ? "line-through text-gray-500" : ""}`}>
-                        {cell.column.id === "txn_date" && tx.page_number ? (
-                          <div className="flex flex-col gap-0.5">
-                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                            <span
-                              className="inline-flex w-fit items-center gap-0.5 rounded bg-indigo-500/20 px-1.5 py-0.5 text-[10px] text-indigo-300"
-                              title={`Source: PDF page ${tx.page_number}`}
-                            >
-                              p.{tx.page_number}
-                            </span>
-                          </div>
-                        ) : (
-                          flexRender(cell.column.columnDef.cell, cell.getContext())
-                        )}
-                      </td>
-                    ))}
-                  </tr>
-                );
-
-              })
-            )}
-          </tbody>
-        </table>
+      {/* AG Grid container */}
+      <div className="ag-theme-quartz-dark rounded-lg border border-white/10 overflow-hidden" style={{ height: "65vh", minHeight: "400px" }}>
+        <AgGridReact
+          rowData={filtered}
+          columnDefs={columns}
+          rowSelection="multiple"
+          onSelectionChanged={handleSelectionChanged}
+          getRowId={(params) => params.data.id}
+          getRowClass={getRowClass}
+          onRowClicked={handleRowClick}
+          rowHeight={48}
+          suppressRowClickSelection={true}
+          suppressCellFocus={true}
+          enableCellTextSelection={true}
+        />
       </div>
 
+      {/* Keep pagination controls if they still want them for server-side fetches, though AG Grid handles all filtered data */}
       {pagination && (
         <div className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 p-4">
           <div className="flex items-center gap-2">
@@ -586,7 +610,7 @@ export function TransactionTable({
               onChange={(event) => onPageSizeChange(parseInt(event.target.value))}
               className="rounded border border-white/10 bg-white/10 px-2 py-1 text-sm text-white focus:outline-none"
             >
-              {[25, 50, 100].map((size) => (
+              {[25, 50, 100, 250, 500, 1000].map((size) => (
                 <option key={size} value={size}>
                   {size}
                 </option>
