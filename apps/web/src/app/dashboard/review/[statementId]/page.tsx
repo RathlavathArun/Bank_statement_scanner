@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import ExportModal, { type ExportJob } from "@/components/ExportModal";
-import { PDFViewer } from "@/components/PDFViewer";
+import { PDFViewer, type BboxCoords } from "@/components/PDFViewer";
 import { TransactionTable } from "@/components/TransactionTable";
 import { OcrStatusScreen } from "@/components/OcrStatusScreen";
 import { useUndoRedo } from "@/components/useUndoRedo";
@@ -105,6 +105,8 @@ export default function ReviewPage() {
   } = useUndoRedo<Transaction[]>([]);
   const [enriching, setEnriching] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [selectedPage, setSelectedPage] = useState<number | null>(null);
+  const [selectedBbox, setSelectedBbox] = useState<BboxCoords | null>(null);
 
   const addToast = useCallback((type: Toast["type"], message: string) => {
     const id = Date.now();
@@ -195,6 +197,15 @@ export default function ReviewPage() {
     };
     return () => socket.close();
   }, [statementId]);
+
+  const handleRowClick = useCallback((txId: string, pageNumber: number | null, bbox: BboxCoords | null) => {
+    if (pageNumber) {
+      setSelectedPage(pageNumber);
+      setSelectedBbox(bbox);
+      // On mobile, auto-switch to PDF tab
+      setActiveTab("pdf");
+    }
+  }, []);
 
   const isReadOnly = statement?.status === "REVIEWED" || statement?.status === "EXPORTED";
   const canExport = statement?.status === "READY_FOR_REVIEW" || statement?.status === "REVIEWED" || statement?.status === "EXPORTED";
@@ -300,7 +311,7 @@ export default function ReviewPage() {
 
   const isPdf = statement?.file_type?.toLowerCase() === "pdf";
   const filePreview = isPdf ? (
-    <PDFViewer fileUrl={fileUrl} />
+    <PDFViewer fileUrl={fileUrl} targetPage={selectedPage} highlightBbox={selectedBbox} />
   ) : (
     <div
       data-testid="pdf-viewer"
@@ -441,6 +452,7 @@ export default function ReviewPage() {
                 setPage(1);
               }}
               onBulkUpdate={bulkUpdateTransactions}
+              onRowClick={handleRowClick}
             />
           </section>
         </div>
@@ -463,6 +475,7 @@ export default function ReviewPage() {
                 setPage(1);
               }}
               onBulkUpdate={bulkUpdateTransactions}
+              onRowClick={handleRowClick}
             />
           )}
         </div>
@@ -481,3 +494,6 @@ export default function ReviewPage() {
     </div>
   );
 }
+
+
+

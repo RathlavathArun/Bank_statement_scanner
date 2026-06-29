@@ -8,6 +8,7 @@ import {
   getCoreRowModel,
   useReactTable,
 } from "@tanstack/react-table";
+import { type BboxCoords } from "@/components/PDFViewer";
 
 interface Transaction {
   id: string;
@@ -24,6 +25,7 @@ interface Transaction {
   ocr_confidence?: number | string | null;
   page_number?: number | null;
   is_ignored?: boolean;
+  bbox?: BboxCoords | null;
 }
 
 interface TransactionTableProps {
@@ -37,6 +39,8 @@ interface TransactionTableProps {
   onPageChange: (p: number) => void;
   onPageSizeChange: (size: number) => void;
   onBulkUpdate?: (txIds: string[], changes: Partial<Transaction>) => void;
+  /** Called when the user clicks a transaction row to jump the PDF to its source page. */
+  onRowClick?: (txId: string, pageNumber: number | null, bbox: BboxCoords | null) => void;
 }
 
 type FilterType = "ALL" | "DEBIT" | "CREDIT";
@@ -71,6 +75,7 @@ export function TransactionTable({
   onPageChange,
   onPageSizeChange,
   onBulkUpdate,
+  onRowClick,
 }: TransactionTableProps) {
   const [editingCell, setEditingCell] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -83,6 +88,7 @@ export function TransactionTable({
   const [rowSelection, setRowSelection] = useState({});
   const [bulkLedger, setBulkLedger] = useState("");
   const [ledgerSuggestions, setLedgerSuggestions] = useState<{ ledger_name: string; score: number }[]>([]);
+  const [activeRowId, setActiveRowId] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     let result = [...transactions];
@@ -528,15 +534,39 @@ export function TransactionTable({
                   <tr
                     key={row.id}
                     data-testid="transaction-row"
-                    className={`border-b border-white/10 transition-colors hover:bg-white/5 ${rowClass} ${borderLeft}`}
+                    onClick={(e) => {
+                      // Don't fire if user clicked on an input/button/select (editing)
+                      const target = e.target as HTMLElement;
+                      if (target.closest("input, button, select, a")) return;
+                      if (onRowClick) {
+                        setActiveRowId(tx.id);
+                        onRowClick(tx.id, tx.page_number ?? null, tx.bbox ?? null);
+                      }
+                    }}
+                    className={`border-b border-white/10 transition-colors hover:bg-white/5 ${rowClass} ${borderLeft} ${
+                      activeRowId === tx.id ? "ring-1 ring-inset ring-amber-400/60 bg-amber-500/10" : ""
+                    } ${onRowClick && tx.page_number ? "cursor-pointer" : ""}`}
                   >
                     {row.getVisibleCells().map((cell) => (
                       <td key={cell.id} className="px-4 py-2">
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        {cell.column.id === "txn_date" && tx.page_number ? (
+                          <div className="flex flex-col gap-0.5">
+                            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                            <span
+                              className="inline-flex w-fit items-center gap-0.5 rounded bg-indigo-500/20 px-1.5 py-0.5 text-[10px] text-indigo-300"
+                              title={`Source: PDF page ${tx.page_number}`}
+                            >
+                              p.{tx.page_number}
+                            </span>
+                          </div>
+                        ) : (
+                          flexRender(cell.column.columnDef.cell, cell.getContext())
+                        )}
                       </td>
                     ))}
                   </tr>
                 );
+
               })
             )}
           </tbody>

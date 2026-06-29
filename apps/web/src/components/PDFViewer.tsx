@@ -4,8 +4,19 @@ import { ComponentType, ReactNode, useCallback, useEffect, useMemo, useRef, useS
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 
+export type BboxCoords = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+};
+
 type PDFViewerProps = {
   fileUrl: string;
+  /** When set, the viewer will jump to this page number (1-indexed). */
+  targetPage?: number | null;
+  /** When set, a highlight overlay is drawn at these normalized (0–1) coordinates on targetPage. */
+  highlightBbox?: BboxCoords | null;
 };
 
 type DocumentProps = {
@@ -24,6 +35,7 @@ type PageProps = {
   scale: number;
   renderAnnotationLayer: boolean;
   renderTextLayer: boolean;
+  onRenderSuccess?: (page: { width: number; height: number }) => void;
 };
 
 type ReactPdfModule = {
@@ -37,12 +49,17 @@ type ReactPdfModule = {
   };
 };
 
-export function PDFViewer({ fileUrl }: PDFViewerProps) {
+export function PDFViewer({ fileUrl, targetPage, highlightBbox }: PDFViewerProps) {
   const [reactPdf, setReactPdf] = useState<ReactPdfModule | null>(null);
   const [numPages, setNumPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [zoom, setZoom] = useState(1);
   const [viewerError, setViewerError] = useState(false);
+  const [pageWidth, setPageWidth] = useState<number | null>(null);
+  const [pageHeight, setPageHeight] = useState<number | null>(null);
+  const pageContainerRef = useRef<HTMLDivElement | null>(null);
+  // Flash state for the highlight — fades after a moment
+  const [highlightFlash, setHighlightFlash] = useState(false);
 
   // Password-prompt state
   const [showPasswordModal, setShowPasswordModal] = useState(false);
@@ -88,6 +105,17 @@ export function PDFViewer({ fileUrl }: PDFViewerProps) {
       cancelled = true;
     };
   }, []);
+
+  // Jump to targetPage whenever it changes
+  useEffect(() => {
+    if (targetPage && targetPage >= 1 && targetPage <= (numPages || 1)) {
+      setCurrentPage(targetPage);
+      // Trigger flash highlight
+      setHighlightFlash(true);
+      const timer = window.setTimeout(() => setHighlightFlash(false), 2000);
+      return () => window.clearTimeout(timer);
+    }
+  }, [targetPage, numPages]);
 
   // Auto-focus the password input when modal opens
   useEffect(() => {
@@ -218,13 +246,36 @@ export function PDFViewer({ fileUrl }: PDFViewerProps) {
               setCurrentPage(1);
             }}
           >
-            <div className="flex justify-center">
+            <div ref={pageContainerRef} className="relative flex justify-center">
               <Page
                 pageNumber={currentPage}
                 scale={zoom}
                 renderAnnotationLayer
                 renderTextLayer
+                onRenderSuccess={(page: { width: number; height: number }) => {
+                  setPageWidth(page.width);
+                  setPageHeight(page.height);
+                }}
               />
+              {/* Bbox highlight overlay — drawn when a transaction row is clicked */}
+              {highlightBbox && highlightFlash && pageWidth && pageHeight && (
+                <div
+                  style={{
+                    position: "absolute",
+                    left: `calc(50% - ${pageWidth / 2}px + ${highlightBbox.x1 * pageWidth}px)`,
+                    top: `${highlightBbox.y1 * pageHeight}px`,
+                    width: `${(highlightBbox.x2 - highlightBbox.x1) * pageWidth}px`,
+                    height: `${(highlightBbox.y2 - highlightBbox.y1) * pageHeight}px`,
+                    background: "rgba(251, 191, 36, 0.35)",
+                    border: "2px solid rgba(251, 191, 36, 0.9)",
+                    borderRadius: "3px",
+                    pointerEvents: "none",
+                    animation: "bboxPulse 2s ease-out forwards",
+                    zIndex: 10,
+                  }}
+                  aria-hidden="true"
+                />
+              )}
             </div>
           </Document>
         )}
