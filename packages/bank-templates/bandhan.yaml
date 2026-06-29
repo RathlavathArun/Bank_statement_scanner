@@ -1,0 +1,35 @@
+bank_id: bandhan
+display_name: "Bandhan Bank"
+bank_code: BANDHAN
+bank_name: "Bandhan Bank Ltd."
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Bandhan Bank"
+    - "Statement of Account"
+  regex:
+    - "IFSC\\s*:?\\s*BDBL0[0-9]{6}"
+
+extraction:
+  headers:
+    - "Txn Date"
+    - "Value Date"
+    - "Particulars"
+    - "Ref No"
+    - "Debit"
+    - "Credit"
+    - "Balance"
+
+  columns:
+    date: 0
+    value_date: 1
+    narration: 2
+    reference: 3
+    debit: 4
+    credit: 5
+    balance: 6
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

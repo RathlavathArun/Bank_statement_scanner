@@ -1,0 +1,33 @@
+bank_id: city_union
+display_name: "City Union Bank"
+bank_code: CITY_UNION
+bank_name: "City Union Bank Ltd."
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "City Union Bank"
+    - "Statement of Account"
+  regex:
+    - "IFSC\\s*:?\\s*CIUB0[0-9]{6}"
+
+extraction:
+  headers:
+    - "Date"
+    - "Narration"
+    - "Ref No"
+    - "Withdrawal"
+    - "Deposit"
+    - "Balance"
+
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

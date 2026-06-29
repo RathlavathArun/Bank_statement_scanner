@@ -1,0 +1,35 @@
+bank_id: south_indian_bank
+display_name: "South Indian Bank"
+bank_code: SIB
+bank_name: "South Indian Bank Ltd."
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "South Indian Bank"
+    - "Statement of Account"
+  regex:
+    - "IFSC\\s*:?\\s*SIBL0[0-9]{6}"
+
+extraction:
+  headers:
+    - "Date"
+    - "Value Date"
+    - "Particulars"
+    - "Chq/Ref No"
+    - "Debit"
+    - "Credit"
+    - "Balance"
+
+  columns:
+    date: 0
+    value_date: 1
+    narration: 2
+    reference: 3
+    debit: 4
+    credit: 5
+    balance: 6
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

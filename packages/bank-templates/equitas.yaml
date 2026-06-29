@@ -1,0 +1,33 @@
+bank_id: equitas
+display_name: "Equitas Small Finance Bank"
+bank_code: EQUITAS
+bank_name: "Equitas Small Finance Bank Ltd."
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Equitas Small Finance Bank"
+    - "Account Statement"
+  regex:
+    - "IFSC\\s*:?\\s*ESFB0[0-9]{6}"
+
+extraction:
+  headers:
+    - "Txn Date"
+    - "Narration"
+    - "Ref No"
+    - "Withdrawal"
+    - "Deposit"
+    - "Balance"
+
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

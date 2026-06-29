@@ -1,0 +1,33 @@
+bank_id: punjab_and_sind_bank
+display_name: "Punjab & Sind Bank"
+bank_code: PSIB
+bank_name: "Punjab & Sind Bank"
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Punjab & Sind Bank"
+    - "Statement of Account"
+  regex:
+    - "IFSC\\s*:?\\s*PSIB0[0-9]{6}"
+
+extraction:
+  headers:
+    - "Date"
+    - "Description"
+    - "Cheque No"
+    - "Debit"
+    - "Credit"
+    - "Balance"
+
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

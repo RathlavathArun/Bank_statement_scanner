@@ -173,7 +173,7 @@ async def update_rule(
     return {"success": True, "data": serialize_rule(rule)}
 
 
-@rules_router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
+@rules_router.delete("/{rule_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def delete_rule(
     rule_id: str,
     db: AsyncSession = Depends(get_db),

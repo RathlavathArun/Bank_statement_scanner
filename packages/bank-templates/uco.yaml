@@ -1,0 +1,33 @@
+bank_id: uco
+display_name: "UCO Bank"
+bank_code: UCO
+bank_name: "UCO Bank"
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "UCO Bank"
+    - "Account Statement"
+  regex:
+    - "IFSC\\s*:?\\s*UCBA0[0-9]{6}"
+
+extraction:
+  headers:
+    - "Date"
+    - "Particulars"
+    - "Instrument No"
+    - "Debit"
+    - "Credit"
+    - "Balance"
+
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

@@ -1,0 +1,35 @@
+bank_id: idbi
+display_name: "IDBI Bank"
+bank_code: IDBI
+bank_name: "IDBI Bank Ltd."
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "IDBI Bank"
+    - "Statement of Account"
+  regex:
+    - "IFSC\\s*:?\\s*IBKL0[0-9]{6}"
+
+extraction:
+  headers:
+    - "Txn Date"
+    - "Value Date"
+    - "Narration"
+    - "Ref No."
+    - "Debit"
+    - "Credit"
+    - "Balance"
+
+  columns:
+    date: 0
+    value_date: 1
+    narration: 2
+    reference: 3
+    debit: 4
+    credit: 5
+    balance: 6
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

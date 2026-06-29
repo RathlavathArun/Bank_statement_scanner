@@ -1,0 +1,33 @@
+bank_id: dhanlaxmi
+display_name: "Dhanlaxmi Bank"
+bank_code: DHANLAXMI
+bank_name: "Dhanlaxmi Bank Ltd."
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Dhanlaxmi Bank"
+    - "Account Statement"
+  regex:
+    - "IFSC\\s*:?\\s*DLXB0[0-9]{6}"
+
+extraction:
+  headers:
+    - "Date"
+    - "Particulars"
+    - "Chq/Ref No"
+    - "Debit"
+    - "Credit"
+    - "Balance"
+
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

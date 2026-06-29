@@ -28,7 +28,6 @@ from statements.llm_tracking import (
     record_usage,
     store_cache,
 )
-from statements.rules_engine import apply_rules  # Task 20: deterministic rules
 
 
 MODE_PATTERNS = {
@@ -656,6 +655,7 @@ async def enrich_transactions_with_tracking(
         # so CA-defined overrides always win over automated suggestions.
         rule_hits: dict[str, EnrichmentResult] = {}
         if client_id:
+            from statements.rules_engine import apply_rules
             rule_hits = await apply_rules(db, transactions, client_id)
         span.set_attribute("rule_hits", len(rule_hits))
         cached_results.update(rule_hits)

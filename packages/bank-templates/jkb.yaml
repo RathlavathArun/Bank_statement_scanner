@@ -1,0 +1,33 @@
+bank_id: jkb
+display_name: "Jammu & Kashmir Bank"
+bank_code: JKB
+bank_name: "Jammu & Kashmir Bank Ltd."
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Jammu & Kashmir Bank"
+    - "Statement of Account"
+  regex:
+    - "IFSC\\s*:?\\s*JAKA0[A-Z0-9]{6}"
+
+extraction:
+  headers:
+    - "Txn Date"
+    - "Description"
+    - "Ref No"
+    - "Debit"
+    - "Credit"
+    - "Balance"
+
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

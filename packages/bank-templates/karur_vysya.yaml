@@ -1,0 +1,33 @@
+bank_id: karur_vysya
+display_name: "Karur Vysya Bank"
+bank_code: KVB
+bank_name: "Karur Vysya Bank Ltd."
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Karur Vysya Bank"
+    - "Account Statement"
+  regex:
+    - "IFSC\\s*:?\\s*KVBL0[0-9]{6}"
+
+extraction:
+  headers:
+    - "Date"
+    - "Particulars"
+    - "Instrument No"
+    - "Debit"
+    - "Credit"
+    - "Balance"
+
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

@@ -1,0 +1,35 @@
+bank_id: indian_bank
+display_name: "Indian Bank"
+bank_code: INDIAN_BANK
+bank_name: "Indian Bank"
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Indian Bank"
+    - "Statement of Account"
+  regex:
+    - "IFSC\\s*:?\\s*IDIB0[0-9]{6}"
+
+extraction:
+  headers:
+    - "Date"
+    - "Value Date"
+    - "Particulars"
+    - "Chq/Ref No"
+    - "Debit"
+    - "Credit"
+    - "Balance"
+
+  columns:
+    date: 0
+    value_date: 1
+    narration: 2
+    reference: 3
+    debit: 4
+    credit: 5
+    balance: 6
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"

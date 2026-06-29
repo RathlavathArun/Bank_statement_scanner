@@ -1,0 +1,33 @@
+bank_id: boma
+display_name: "Bank of Maharashtra"
+bank_code: BOMA
+bank_name: "Bank of Maharashtra"
+type: "pdf_text"
+
+fingerprint:
+  keywords:
+    - "Bank of Maharashtra"
+    - "Statement of Account"
+  regex:
+    - "IFSC\\s*:?\\s*MAHB0[0-9]{6}"
+
+extraction:
+  headers:
+    - "Txn Date"
+    - "Particulars"
+    - "Cheque No"
+    - "Withdrawn"
+    - "Deposit"
+    - "Balance"
+
+  columns:
+    date: 0
+    narration: 1
+    reference: 2
+    debit: 3
+    credit: 4
+    balance: 5
+
+  formats:
+    date: "%d/%m/%Y"
+    number: "indian"
