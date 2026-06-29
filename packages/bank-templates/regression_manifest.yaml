@@ -20,4 +20,16 @@ covered_banks:
   - sbi
   - union_bank
   - yes_bank
-
+  - idbi
+  - indian_bank
+  - iob
+  - punjab_and_sind_bank
+  - boma
+  - uco
+  - bandhan
+  - city_union
+  - dhanlaxmi
+  - jkb
+  - karur_vysya
+  - south_indian_bank
+  - equitas

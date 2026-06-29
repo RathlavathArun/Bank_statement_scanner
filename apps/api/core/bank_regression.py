@@ -126,14 +126,16 @@ def run_bank_regression(bank_code: str) -> RegressionCaseResult:
     if not template:
         return RegressionCaseResult(bank_code, False, 2, 0, "Template not found.")
 
-    rows = build_regression_rows(template)
-    try:
-        with tempfile.NamedTemporaryFile("w", suffix=".csv", newline="", delete=False, encoding="utf-8") as csv_file:
-            writer = csv.writer(csv_file)
-            writer.writerows(rows)
-            temp_path = Path(csv_file.name)
+    golden_pdf = TEMPLATE_DIR / "golden_pdfs" / f"{bank_code}.pdf"
+    if not golden_pdf.exists():
+        try:
+            from core.generate_golden_pdfs import generate_all_golden_pdfs
+            generate_all_golden_pdfs()
+        except Exception as exc:
+            return RegressionCaseResult(bank_code, False, 2, 0, f"Golden PDF missing and could not be generated: {exc}")
 
-        parsed = parse_statement(temp_path, bank_code)
+    try:
+        parsed = parse_statement(golden_pdf, bank_code)
         actual = len(parsed.transactions)
         passed = actual == 2
         return RegressionCaseResult(
@@ -145,11 +147,6 @@ def run_bank_regression(bank_code: str) -> RegressionCaseResult:
         )
     except Exception as exc:
         return RegressionCaseResult(bank_code, False, 2, 0, str(exc))
-    finally:
-        try:
-            temp_path.unlink(missing_ok=True)
-        except UnboundLocalError:
-            pass
 
 
 def run_regression_suite() -> dict[str, Any]:
