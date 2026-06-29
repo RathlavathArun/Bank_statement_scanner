@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     LLM_MAX_CONCURRENT_BATCHES: int = 4  # Task 16: max 4 parallel API calls
     ANTHROPIC_INPUT_USD_PER_1M: float = 3.00   # Sonnet 4.5 pricing
     ANTHROPIC_OUTPUT_USD_PER_1M: float = 15.00  # Sonnet 4.5 pricing
+
+    # Task 18 — GPT-4o as 3rd-tier fallback when both Anthropic models fail.
+    # PRD risk §14: Anthropic outage must not halt all categorisation.
+    OPENAI_API_KEY: str | None = None
+    OPENAI_FALLBACK_MODEL: str = "gpt-4o"
     # Zero Data Retention — set to True only AFTER signing the Anthropic ZDR
     # agreement at https://console.anthropic.com/settings/privacy
     # When enabled, the `anthropic-beta: zero-data-retention-2024-02-23` header

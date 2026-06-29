@@ -391,16 +391,100 @@ async def claude_enrich_batch(
     return results
 
 
+async def gpt4o_enrich_batch(
+    transactions: list[Transaction],
+    allowed_ledgers: list[str] | None = None,
+) -> list[EnrichmentResult]:
+    """Task 18 — GPT-4o fallback when both Anthropic models are unavailable.
+
+    Uses OpenAI chat completions with JSON mode so the output is parseable
+    in the same schema as the Claude tool-use response.
+    """
+    if not settings.OPENAI_API_KEY:
+        return []
+
+    allowed_set = set(allowed_ledgers) if allowed_ledgers else None
+
+    ledger_instruction = (
+        f"Allowed ledger names (use ONLY these or null): {json.dumps(allowed_ledgers)}"
+        if allowed_ledgers
+        else "Suggest a practical accounting ledger name, or null."
+    )
+
+    system_prompt = (
+        "You are an Indian accounting assistant. For each transaction return JSON with keys: "
+        "transaction_id, narration_clean, payment_mode "
+        "(one of UPI/NEFT/RTGS/IMPS/CHEQUE/CASH/CARD or null), "
+        "counterparty (string or null), suggested_ledger (string or null), "
+        "confidence (0-1 float). "
+        + ledger_instruction
+    )
+    user_content = (
+        "Return a JSON array named 'items' with one object per transaction.\n\n"
+        f"Transactions:\n{json.dumps(transactions_payload(transactions))}"
+    )
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.OPENAI_FALLBACK_MODEL,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                "max_tokens": 2048,
+            },
+        )
+        response.raise_for_status()
+
+    raw = response.json()["choices"][0]["message"]["content"]
+    items = json.loads(raw).get("items", [])
+
+    by_id = {tx.id: tx for tx in transactions}
+    results: list[EnrichmentResult] = []
+    for item in items:
+        tx = by_id.get(item.get("transaction_id"))
+        if not tx:
+            continue
+        confidence = Decimal(str(item.get("confidence") or 0)).quantize(Decimal("0.001"))
+
+        # Task 17 guard: reject ledger names outside the allowed set.
+        raw_ledger = item.get("suggested_ledger")
+        if allowed_set and raw_ledger and raw_ledger not in allowed_set:
+            raw_ledger = None
+
+        results.append(
+            EnrichmentResult(
+                transaction_id=tx.id,
+                narration_clean=item.get("narration_clean") or clean_narration(tx.narration or ""),
+                payment_mode=item.get("payment_mode"),
+                counterparty=item.get("counterparty"),
+                suggested_ledger=raw_ledger,
+                confidence=max(Decimal("0.000"), min(confidence, Decimal("1.000"))),
+                source="gpt4o-fallback",
+                cache_status="MISS",
+            )
+        )
+    return results
+
+
 async def enrich_transactions(
     transactions: list[Transaction],
     allowed_ledgers: list[str] | None = None,
 ) -> list[EnrichmentResult]:
-    """Enrich transactions using the Sonnet → Haiku → heuristic fallback chain.
+    """Enrich transactions using the 4-tier fallback chain (Tasks 15 + 18).
 
-    Task 15 fallback order:
-      1. Claude Sonnet 4.5 (primary — highest accuracy)
-      2. Claude 3.5 Haiku  (fallback — if Sonnet is rate-limited / unavailable)
-      3. Heuristic engine  (local — no external API call, always available)
+    Fallback order:
+      1. Claude Sonnet 4.5   (primary — highest accuracy)
+      2. Claude 3.5 Haiku    (fallback — Anthropic rate-limit / model error)
+      3. GPT-4o              (fallback — full Anthropic API outage, Task 18)
+      4. Rule-based heuristic (local — always available, no API call)
 
     Task 17:
       allowed_ledgers constrains the LLM's suggested_ledger to the client's
@@ -411,13 +495,16 @@ async def enrich_transactions(
 
     llm_results: list[EnrichmentResult] = []
 
-    # ── Step 1: Try primary model (Sonnet 4.5) ────────────────────────────
+    # ── Step 1: Claude Sonnet 4.5 (primary) ───────────────────────────
     try:
         llm_results = await claude_enrich_batch(
             transactions, allowed_ledgers=allowed_ledgers
         )
     except (httpx.HTTPError, ValueError, KeyError):
-        # ── Step 2: Sonnet failed — retry with Haiku fallback ─────────────
+        pass
+
+    if not llm_results:
+        # ── Step 2: Claude 3.5 Haiku ──────────────────────────────────
         if settings.ANTHROPIC_FALLBACK_MODEL:
             try:
                 llm_results = await claude_enrich_batch(
@@ -426,10 +513,19 @@ async def enrich_transactions(
                     allowed_ledgers=allowed_ledgers,
                 )
             except (httpx.HTTPError, ValueError, KeyError):
-                llm_results = []
-        else:
-            llm_results = []
+                pass
 
+    if not llm_results:
+        # ── Step 3: GPT-4o (Task 18 — cross-provider) ───────────────────
+        if settings.OPENAI_API_KEY:
+            try:
+                llm_results = await gpt4o_enrich_batch(
+                    transactions, allowed_ledgers=allowed_ledgers
+                )
+            except (httpx.HTTPError, ValueError, KeyError, json.JSONDecodeError):
+                pass
+
+    # ── Step 4: Rule-based heuristic (always available) ────────────────
     results_by_id = {result.transaction_id: result for result in llm_results}
     for transaction in transactions:
         results_by_id.setdefault(transaction.id, heuristic_enrich(transaction))
@@ -461,6 +557,70 @@ def enrichment_cache_payload(result: EnrichmentResult) -> dict[str, Any]:
     }
 
 
+async def detect_recurring(
+    db: AsyncSession,
+    transactions: list[Transaction],
+    client_id: str,
+    min_hit_count: int = 2,
+) -> dict[str, EnrichmentResult]:
+    """Task 19 — Recurring transaction detection.
+
+    Looks up each transaction's normalised narration in the client's
+    LedgerMapping table. When a pattern has been confirmed at least
+    `min_hit_count` times it is treated as a known recurring transaction
+    (rent, salary, EMI, etc.) and the ledger is pre-filled without any
+    LLM call.
+
+    Returns a dict of transaction_id -> EnrichmentResult for every
+    transaction that matched a known pattern. The caller excludes these
+    from the LLM batch, saving API cost.
+    """
+    from statements.ledger_memory import normalize_narration
+
+    if not transactions or not client_id:
+        return {}
+
+    # Build normalised pattern -> transaction mapping
+    pattern_to_txs: dict[str, list[Transaction]] = {}
+    for tx in transactions:
+        pattern = normalize_narration(tx.narration_clean or tx.narration)
+        if pattern:
+            pattern_to_txs.setdefault(pattern, []).append(tx)
+
+    if not pattern_to_txs:
+        return {}
+
+    # Fetch confirmed mappings for these exact patterns in one query
+    from db.models import LedgerMapping
+    rows = await db.execute(
+        select(LedgerMapping).where(
+            LedgerMapping.client_id == client_id,
+            LedgerMapping.pattern.in_(list(pattern_to_txs.keys())),
+            LedgerMapping.hit_count >= min_hit_count,
+        )
+    )
+    mappings = rows.scalars().all()
+
+    matched: dict[str, EnrichmentResult] = {}
+    for mapping in mappings:
+        for tx in pattern_to_txs.get(mapping.pattern, []):
+            narration_clean = clean_narration(tx.narration or "")
+            payment_mode = detect_payment_mode(tx.narration or "")
+            counterparty = detect_counterparty(tx.narration or "", narration_clean)
+            confidence = Decimal("0.920")  # high confidence for confirmed recurring patterns
+            matched[tx.id] = EnrichmentResult(
+                transaction_id=tx.id,
+                narration_clean=narration_clean,
+                payment_mode=payment_mode,
+                counterparty=counterparty,
+                suggested_ledger=mapping.ledger_name,
+                confidence=confidence,
+                source="recurring",
+                cache_status="MISS",
+            )
+    return matched
+
+
 async def enrich_transactions_with_tracking(
     db: AsyncSession,
     transactions: list[Transaction],
@@ -489,7 +649,21 @@ async def enrich_transactions_with_tracking(
         cache_misses: list[Transaction] = []
         hashes_by_id: dict[str, str] = {}
 
+        # ── Task 19: recurring detection pre-filter ───────────────────────────
+        # Transactions matching known monthly patterns (rent/salary/EMI) are
+        # pre-filled from LedgerMapping without touching the LLM.
+        recurring_hits: dict[str, EnrichmentResult] = {}
+        if client_id:
+            recurring_hits = await detect_recurring(db, transactions, client_id)
+        span.set_attribute("recurring_hits", len(recurring_hits))
+        # Pre-populate cached_results with recurring matches
+        cached_results.update(recurring_hits)
+        # ────────────────────────────────────────────────────────────────────
+
         for transaction in transactions:
+            # Skip LLM cache lookup for recurring-matched transactions
+            if transaction.id in cached_results:
+                continue
             content_hash = content_hash_for_transaction(transaction)
             hashes_by_id[transaction.id] = content_hash
             cache = await get_cache(db, content_hash)
