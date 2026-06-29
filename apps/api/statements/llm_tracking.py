@@ -47,6 +47,13 @@ def estimate_cost_usd(prompt_tokens: int, completion_tokens: int) -> Decimal:
     return (input_cost + output_cost).quantize(Decimal("0.000001"))
 
 
+def estimate_openai_cost_usd(prompt_tokens: int, completion_tokens: int) -> Decimal:
+    """Task 18 \u2014 estimate GPT-4o API cost (used when Anthropic tiers fail)."""
+    input_cost = Decimal(prompt_tokens) * Decimal(str(settings.OPENAI_INPUT_USD_PER_1M)) / Decimal("1000000")
+    output_cost = Decimal(completion_tokens) * Decimal(str(settings.OPENAI_OUTPUT_USD_PER_1M)) / Decimal("1000000")
+    return (input_cost + output_cost).quantize(Decimal("0.000001"))
+
+
 async def get_cache(db: AsyncSession, content_hash: str) -> LLMCache | None:
     result = await db.execute(select(LLMCache).where(LLMCache.content_hash == content_hash))
     return result.scalar_one_or_none()

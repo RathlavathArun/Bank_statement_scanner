@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     # PRD risk §14: Anthropic outage must not halt all categorisation.
     OPENAI_API_KEY: str | None = None
     OPENAI_FALLBACK_MODEL: str = "gpt-4o"
+    OPENAI_INPUT_USD_PER_1M: float = 2.50   # GPT-4o pricing (input)
+    OPENAI_OUTPUT_USD_PER_1M: float = 10.00  # GPT-4o pricing (output)
     # Zero Data Retention — set to True only AFTER signing the Anthropic ZDR
     # agreement at https://console.anthropic.com/settings/privacy
     # When enabled, the `anthropic-beta: zero-data-retention-2024-02-23` header

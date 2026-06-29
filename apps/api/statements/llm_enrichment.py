@@ -21,6 +21,7 @@ from db.models import Ledger, Transaction
 from statements.llm_tracking import (
     content_hash_for_transaction,
     estimate_cost_usd,
+    estimate_openai_cost_usd,
     estimate_tokens,
     get_cache,
     mark_cache_hit,
@@ -701,19 +702,27 @@ async def enrich_transactions_with_tracking(
             content_hash = hashes_by_id[transaction.id]
             prompt_tokens = estimate_tokens(json.dumps(transactions_payload([transaction])))
             completion_tokens = estimate_tokens(json.dumps(enrichment_cache_payload(result)))
-            is_claude = result.source in {"claude", "claude-fallback"}
-            cost = (
-                estimate_cost_usd(prompt_tokens, completion_tokens)
-                if is_claude
-                else Decimal("0.000000")
-            )
-            provider = "anthropic" if is_claude else "local"
-            if result.source == "claude-fallback":
-                model = settings.ANTHROPIC_FALLBACK_MODEL
-            elif result.source == "claude":
+
+            # ── Resolve provider / model / cost by source tag ──────────────────
+            if result.source == "claude":
+                provider = "anthropic"
                 model = settings.ANTHROPIC_MODEL
-            else:
-                model = "heuristic-v1"
+                cost = estimate_cost_usd(prompt_tokens, completion_tokens)
+            elif result.source == "claude-fallback":
+                provider = "anthropic"
+                model = settings.ANTHROPIC_FALLBACK_MODEL
+                cost = estimate_cost_usd(prompt_tokens, completion_tokens)
+            elif result.source == "gpt4o-fallback":  # Task 18
+                provider = "openai"
+                model = settings.OPENAI_FALLBACK_MODEL
+                cost = estimate_openai_cost_usd(prompt_tokens, completion_tokens)
+            else:  # heuristic or recurring — no API cost
+                provider = "local"
+                model = "recurring-v1" if result.source == "recurring" else "heuristic-v1"
+                cost = Decimal("0.000000")
+            # ────────────────────────────────────────────────────────────────
+
+            is_paid_api = provider in {"anthropic", "openai"}
             await store_cache(
                 db=db,
                 content_hash=content_hash,
@@ -732,8 +741,8 @@ async def enrich_transactions_with_tracking(
                 model=model,
                 cache_status=result.cache_status,
                 content_hash=content_hash,
-                prompt_tokens=prompt_tokens if is_claude else 0,
-                completion_tokens=completion_tokens if is_claude else 0,
+                prompt_tokens=prompt_tokens if is_paid_api else 0,
+                completion_tokens=completion_tokens if is_paid_api else 0,
                 cost_usd=cost,
             )
             cached_results[transaction.id] = result
