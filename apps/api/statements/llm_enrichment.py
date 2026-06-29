@@ -1,6 +1,7 @@
 """Narration enrichment and confidence scoring for extracted transactions."""
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -219,6 +220,15 @@ def transactions_payload(transactions: list[Transaction]) -> list[dict[str, Any]
     ]
 
 
+def _chunk(lst: list, size: int) -> list[list]:
+    """Split `lst` into consecutive sub-lists of at most `size` items.
+
+    Task 16 — used to split cache-miss transactions into LLM_BATCH_SIZE (50)
+    chunks before dispatching concurrent API calls.
+    """
+    return [lst[i : i + size] for i in range(0, len(lst), size)]
+
+
 async def claude_enrich_batch(
     transactions: list[Transaction],
     model: str | None = None,
@@ -433,18 +443,44 @@ async def enrich_transactions_with_tracking(
             else:
                 cache_misses.append(transaction)
 
-        fresh_results = await enrich_transactions(cache_misses)
+        # ── Task 16: batch + concurrency-limited enrichment ───────────────────
+        # Split cache-misses into chunks of LLM_BATCH_SIZE (50) and run at most
+        # LLM_MAX_CONCURRENT_BATCHES (4) chunks in parallel.
+        batch_size = settings.LLM_BATCH_SIZE
+        max_concurrent = settings.LLM_MAX_CONCURRENT_BATCHES
+        batches = _chunk(cache_misses, batch_size)
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def _enrich_batch(batch: list[Transaction]) -> list[EnrichmentResult]:
+            async with semaphore:
+                return await enrich_transactions(batch)
+
+        batch_results_nested = await asyncio.gather(
+            *[_enrich_batch(batch) for batch in batches]
+        )
+        # Flatten [[result, ...], ...] -> [result, ...]
+        fresh_results: list[EnrichmentResult] = [
+            r for batch in batch_results_nested for r in batch
+        ]
+        # ─────────────────────────────────────────────────────────────────────
+
         for transaction, result in zip(cache_misses, fresh_results):
             content_hash = hashes_by_id[transaction.id]
             prompt_tokens = estimate_tokens(json.dumps(transactions_payload([transaction])))
             completion_tokens = estimate_tokens(json.dumps(enrichment_cache_payload(result)))
+            is_claude = result.source in {"claude", "claude-fallback"}
             cost = (
                 estimate_cost_usd(prompt_tokens, completion_tokens)
-                if result.source == "claude"
+                if is_claude
                 else Decimal("0.000000")
             )
-            provider = "anthropic" if result.source == "claude" else "local"
-            model = settings.ANTHROPIC_MODEL if result.source == "claude" else "heuristic-v1"
+            provider = "anthropic" if is_claude else "local"
+            if result.source == "claude-fallback":
+                model = settings.ANTHROPIC_FALLBACK_MODEL
+            elif result.source == "claude":
+                model = settings.ANTHROPIC_MODEL
+            else:
+                model = "heuristic-v1"
             await store_cache(
                 db=db,
                 content_hash=content_hash,
@@ -463,8 +499,8 @@ async def enrich_transactions_with_tracking(
                 model=model,
                 cache_status=result.cache_status,
                 content_hash=content_hash,
-                prompt_tokens=prompt_tokens if result.source == "claude" else 0,
-                completion_tokens=completion_tokens if result.source == "claude" else 0,
+                prompt_tokens=prompt_tokens if is_claude else 0,
+                completion_tokens=completion_tokens if is_claude else 0,
                 cost_usd=cost,
             )
             cached_results[transaction.id] = result

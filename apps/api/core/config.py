@@ -33,7 +33,8 @@ class Settings(BaseSettings):
     # Task 15 — Fallback model: Haiku is used when Sonnet is unavailable
     # (rate-limit, API outage, etc.). Lower accuracy but keeps enrichment live.
     ANTHROPIC_FALLBACK_MODEL: str = "claude-3-5-haiku-latest"
-    LLM_BATCH_SIZE: int = 20
+    LLM_BATCH_SIZE: int = 50            # Task 16: 50 txns/call (was 20)
+    LLM_MAX_CONCURRENT_BATCHES: int = 4  # Task 16: max 4 parallel API calls
     ANTHROPIC_INPUT_USD_PER_1M: float = 3.00   # Sonnet 4.5 pricing
     ANTHROPIC_OUTPUT_USD_PER_1M: float = 15.00  # Sonnet 4.5 pricing
     # Zero Data Retention — set to True only AFTER signing the Anthropic ZDR
