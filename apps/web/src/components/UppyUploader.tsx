@@ -276,16 +276,51 @@ export default function UppyUploader({
 
       {/* Progress bar */}
       {isUploading && (
-        <div className="space-y-1">
+        <div className="space-y-2">
           <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
             <div
               className="h-full rounded-full bg-gradient-to-r from-blue-500 to-violet-500 transition-all duration-300"
               style={{ width: `${progress}%` }}
             />
           </div>
-          <p className="text-xs text-center text-slate-400">
-            Uploading… {progress}%
-          </p>
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-slate-400 font-medium">
+              Uploading… {progress}%
+            </p>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => uppyRef.current?.pauseAll()}
+                className="rounded bg-amber-500/20 border border-amber-500/30 px-2.5 py-1 text-xs text-amber-300 hover:bg-amber-500/35 transition-colors"
+              >
+                Pause
+              </button>
+              <button
+                type="button"
+                onClick={() => uppyRef.current?.resumeAll()}
+                className="rounded bg-emerald-500/20 border border-emerald-500/30 px-2.5 py-1 text-xs text-emerald-300 hover:bg-emerald-500/35 transition-colors"
+              >
+                Resume
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Retry button on error */}
+      {uploadState === "error" && (
+        <div className="flex items-center justify-between p-2.5 rounded-lg bg-red-500/10 border border-red-500/20">
+          <span className="text-xs text-red-400 font-medium">Upload failed or interrupted.</span>
+          <button
+            type="button"
+            onClick={() => {
+              setUploadState("uploading");
+              uppyRef.current?.retryAll();
+            }}
+            className="rounded bg-red-600 px-3 py-1 text-xs font-semibold text-white hover:bg-red-700 transition-colors"
+          >
+            Retry Upload
+          </button>
         </div>
       )}
 

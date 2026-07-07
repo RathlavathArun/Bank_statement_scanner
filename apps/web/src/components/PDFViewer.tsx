@@ -117,6 +117,17 @@ export function PDFViewer({ fileUrl, targetPage, highlightBbox }: PDFViewerProps
     }
   }, [targetPage, numPages]);
 
+  // Scroll highlight overlay into view when it becomes active
+  useEffect(() => {
+    if (highlightFlash && highlightBbox) {
+      const scrollTimer = setTimeout(() => {
+        const elem = pageContainerRef.current?.querySelector("[data-bbox-highlight]");
+        elem?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 150);
+      return () => clearTimeout(scrollTimer);
+    }
+  }, [highlightFlash, highlightBbox]);
+
   // Auto-focus the password input when modal opens
   useEffect(() => {
     if (showPasswordModal) {
@@ -260,6 +271,7 @@ export function PDFViewer({ fileUrl, targetPage, highlightBbox }: PDFViewerProps
               {/* Bbox highlight overlay — drawn when a transaction row is clicked */}
               {highlightBbox && highlightFlash && pageWidth && pageHeight && (
                 <div
+                  data-bbox-highlight
                   style={{
                     position: "absolute",
                     left: `calc(50% - ${pageWidth / 2}px + ${highlightBbox.x1 * pageWidth}px)`,

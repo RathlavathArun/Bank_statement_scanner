@@ -77,3 +77,22 @@ def mask_for_llm(
     text = _ACCT_RE.sub("[ACCT]", text)
 
     return text
+
+
+def validate_no_pii(text: str) -> None:
+    """
+    Scan the text (usually the JSON payload sent to LLMs) for unmasked PII.
+    Raises ValueError if any raw credit card, Aadhaar, PAN, phone number,
+    or account number matches are found.
+    """
+    if _CARD_RE.search(text):
+        raise ValueError("Safety check failed: Raw credit card number detected in prompt payload.")
+    if _AADHAAR_RE.search(text):
+        raise ValueError("Safety check failed: Raw Aadhaar number detected in prompt payload.")
+    if _PAN_RE.search(text):
+        raise ValueError("Safety check failed: Raw PAN detected in prompt payload.")
+    if _PHONE_RE.search(text):
+        raise ValueError("Safety check failed: Raw phone number detected in prompt payload.")
+    if _ACCT_RE.search(text):
+        raise ValueError("Safety check failed: Raw account number or long digit sequence detected in prompt payload.")
+

@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     # is attached to every API call so Anthropic does not retain prompt/response
     # data. PRD Task 14 — required before PII-masked data flows to the API.
     ANTHROPIC_ZDR_ENABLED: bool = False
+    ANTHROPIC_ZERO_DATA_RETENTION: bool = True
 
     # ─── S3 / MinIO ─────────────────────────────
     S3_ENDPOINT: str = "http://localhost:9000"

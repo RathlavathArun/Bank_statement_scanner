@@ -1,0 +1,11 @@
+groups:
+  - name: bank-statement-extraction-alerts
+    rules:
+      - alert: HighBankExtractionFailureRate
+        expr: bank_extraction_failure_rate > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High statement extraction failure rate detected for bank: {{ $labels.bank_code }}"
+          description: "Extraction failure rate for bank '{{ $labels.bank_code }}' has exceeded 5% (current: {{ $value | humanizePercentage }})."

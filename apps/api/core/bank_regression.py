@@ -137,13 +137,75 @@ def run_bank_regression(bank_code: str) -> RegressionCaseResult:
     try:
         parsed = parse_statement(golden_pdf, bank_code)
         actual = len(parsed.transactions)
-        passed = actual == 2
+        
+        expected_txs = [
+            {"narration": "UPI PAYMENT TO TEST VENDOR", "debit": 100.0, "credit": None, "balance": 9900.0, "reference_no": "REF001"},
+            {"narration": "NEFT CREDIT FROM TEST CUSTOMER", "debit": None, "credit": 500.0, "balance": 10400.0, "reference_no": "REF002"}
+        ]
+        
+        if actual != 2:
+            return RegressionCaseResult(
+                bank_code=bank_code,
+                passed=False,
+                expected_transactions=2,
+                actual_transactions=actual,
+                error=f"Expected 2 transactions, parsed {actual}."
+            )
+            
+        for i, tx in enumerate(parsed.transactions):
+            exp = expected_txs[i]
+            # Verify narration contains expected text, normalizing line breaks and splits
+            exp_norm = "".join(c for c in exp["narration"].lower() if c.isalnum())
+            tx_norm = "".join(c for c in tx.narration.lower() if c.isalnum())
+            if exp_norm not in tx_norm:
+                return RegressionCaseResult(
+                    bank_code=bank_code,
+                    passed=False,
+                    expected_transactions=2,
+                    actual_transactions=actual,
+                    error=f"Tx {i+1} narration mismatch: expected '{exp['narration']}', got '{tx.narration}'"
+                )
+            
+            # Verify debit
+            tx_debit = float(tx.debit) if tx.debit is not None else None
+            if exp["debit"] != tx_debit:
+                return RegressionCaseResult(
+                    bank_code=bank_code,
+                    passed=False,
+                    expected_transactions=2,
+                    actual_transactions=actual,
+                    error=f"Tx {i+1} debit mismatch: expected {exp['debit']}, got {tx_debit}"
+                )
+                
+            # Verify credit
+            tx_credit = float(tx.credit) if tx.credit is not None else None
+            if exp["credit"] != tx_credit:
+                return RegressionCaseResult(
+                    bank_code=bank_code,
+                    passed=False,
+                    expected_transactions=2,
+                    actual_transactions=actual,
+                    error=f"Tx {i+1} credit mismatch: expected {exp['credit']}, got {tx_credit}"
+                )
+                
+            # Verify balance
+            tx_balance = float(tx.balance) if tx.balance is not None else None
+            if exp["balance"] != tx_balance:
+                return RegressionCaseResult(
+                    bank_code=bank_code,
+                    passed=False,
+                    expected_transactions=2,
+                    actual_transactions=actual,
+                    error=f"Tx {i+1} balance mismatch: expected {exp['balance']}, got {tx_balance}"
+                )
+
+        passed = True
         return RegressionCaseResult(
             bank_code=bank_code,
             passed=passed,
             expected_transactions=2,
             actual_transactions=actual,
-            error=None if passed else f"Expected 2 transactions, parsed {actual}.",
+            error=None,
         )
     except Exception as exc:
         return RegressionCaseResult(bank_code, False, 2, 0, str(exc))

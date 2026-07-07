@@ -1,0 +1,257 @@
+{
+  "evaluation_timestamp": "2026-07-07T20:36:56.461576",
+  "total_transactions_evaluated": 5000,
+  "correct_categorizations": 4271,
+  "categorization_accuracy_rate": 0.8542,
+  "status": "PASSED",
+  "failures_count": 729,
+  "confusion_matrix": {
+    "Software & Subscription": {
+      "Software & Subscription": 425,
+      "Office Expenses": 8,
+      "Food & Entertainment": 11,
+      "Travel Expenses": 7,
+      "Rent Expenses": 4,
+      "Utilities": 11,
+      "Legal & Professional": 9,
+      "Training & Development": 6,
+      "Medical Expenses": 11,
+      "Finance Costs": 8
+    },
+    "Office Expenses": {
+      "Software & Subscription": 10,
+      "Office Expenses": 433,
+      "Food & Entertainment": 5,
+      "Travel Expenses": 6,
+      "Rent Expenses": 8,
+      "Utilities": 9,
+      "Legal & Professional": 11,
+      "Training & Development": 5,
+      "Medical Expenses": 7,
+      "Finance Costs": 6
+    },
+    "Food & Entertainment": {
+      "Software & Subscription": 3,
+      "Office Expenses": 14,
+      "Food & Entertainment": 425,
+      "Travel Expenses": 8,
+      "Rent Expenses": 12,
+      "Utilities": 2,
+      "Legal & Professional": 7,
+      "Training & Development": 14,
+      "Medical Expenses": 10,
+      "Finance Costs": 5
+    },
+    "Travel Expenses": {
+      "Software & Subscription": 6,
+      "Office Expenses": 8,
+      "Food & Entertainment": 13,
+      "Travel Expenses": 427,
+      "Rent Expenses": 12,
+      "Utilities": 5,
+      "Legal & Professional": 6,
+      "Training & Development": 10,
+      "Medical Expenses": 1,
+      "Finance Costs": 12
+    },
+    "Rent Expenses": {
+      "Software & Subscription": 7,
+      "Office Expenses": 17,
+      "Food & Entertainment": 13,
+      "Travel Expenses": 5,
+      "Rent Expenses": 411,
+      "Utilities": 6,
+      "Legal & Professional": 10,
+      "Training & Development": 14,
+      "Medical Expenses": 7,
+      "Finance Costs": 10
+    },
+    "Utilities": {
+      "Software & Subscription": 4,
+      "Office Expenses": 16,
+      "Food & Entertainment": 3,
+      "Travel Expenses": 10,
+      "Rent Expenses": 8,
+      "Utilities": 423,
+      "Legal & Professional": 6,
+      "Training & Development": 7,
+      "Medical Expenses": 13,
+      "Finance Costs": 10
+    },
+    "Legal & Professional": {
+      "Software & Subscription": 11,
+      "Office Expenses": 6,
+      "Food & Entertainment": 5,
+      "Travel Expenses": 11,
+      "Rent Expenses": 10,
+      "Utilities": 12,
+      "Legal & Professional": 422,
+      "Training & Development": 5,
+      "Medical Expenses": 8,
+      "Finance Costs": 10
+    },
+    "Training & Development": {
+      "Software & Subscription": 6,
+      "Office Expenses": 5,
+      "Food & Entertainment": 8,
+      "Travel Expenses": 8,
+      "Rent Expenses": 11,
+      "Utilities": 2,
+      "Legal & Professional": 5,
+      "Training & Development": 442,
+      "Medical Expenses": 5,
+      "Finance Costs": 8
+    },
+    "Medical Expenses": {
+      "Software & Subscription": 6,
+      "Office Expenses": 5,
+      "Food & Entertainment": 6,
+      "Travel Expenses": 5,
+      "Rent Expenses": 9,
+      "Utilities": 7,
+      "Legal & Professional": 6,
+      "Training & Development": 6,
+      "Medical Expenses": 442,
+      "Finance Costs": 8
+    },
+    "Finance Costs": {
+      "Software & Subscription": 10,
+      "Office Expenses": 8,
+      "Food & Entertainment": 9,
+      "Travel Expenses": 8,
+      "Rent Expenses": 7,
+      "Utilities": 11,
+      "Legal & Professional": 8,
+      "Training & Development": 9,
+      "Medical Expenses": 9,
+      "Finance Costs": 421
+    }
+  },
+  "key_failures": [
+    {
+      "transaction_id": "tx-eval-1",
+      "narration": "UPI / GITHUB / 126225 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Food & Entertainment",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-22",
+      "narration": "UPI / GITHUB / 476417 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Travel Expenses",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-36",
+      "narration": "UPI / MAILCHIMP / 391476 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Rent Expenses",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-50",
+      "narration": "UPI / AWS / 944151 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Travel Expenses",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-51",
+      "narration": "UPI / DIGITALOCEAN / 520651 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Food & Entertainment",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-55",
+      "narration": "UPI / FIGMA / 514850 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Medical Expenses",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-59",
+      "narration": "UPI / ATLASSIAN / 665158 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Utilities",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-63",
+      "narration": "UPI / DIGITALOCEAN / 329974 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Rent Expenses",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-64",
+      "narration": "UPI / SLACK / 634277 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Utilities",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-70",
+      "narration": "UPI / GITHUB / 503457 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Rent Expenses",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-72",
+      "narration": "UPI / FIGMA / 654816 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Legal & Professional",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-77",
+      "narration": "UPI / VERCEL / 905934 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Training & Development",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-87",
+      "narration": "UPI / ZOOM / 260263 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Office Expenses",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-91",
+      "narration": "UPI / SENTRY / 439902 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Legal & Professional",
+      "reason": "Classifier confusion with high-overlap features"
+    },
+    {
+      "transaction_id": "tx-eval-93",
+      "narration": "UPI / GITHUB / 480612 / TRANSFER",
+      "industry": "SaaS & Software",
+      "expected_ledger": "Software & Subscription",
+      "predicted_ledger": "Office Expenses",
+      "reason": "Classifier confusion with high-overlap features"
+    }
+  ],
+  "improvements": [
+    "Add custom narration clean rules for SaaS billing to distinguish AWS vs other online purchases.",
+    "Incorporate payee counterparty names derived from UPI VPA fields to reduce generic office expenses confusion.",
+    "Tune LLM prompts with positive and negative examples for professional services vs training expenses."
+  ]
+}

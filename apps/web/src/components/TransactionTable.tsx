@@ -148,8 +148,8 @@ export function TransactionTable({
     }
   };
 
-  const totalDebit = filtered.reduce((sum, tx) => sum + amountValue(tx.debit), 0);
-  const totalCredit = filtered.reduce((sum, tx) => sum + amountValue(tx.credit), 0);
+  const totalDebit = filtered.filter((tx) => !tx.is_ignored).reduce((sum, tx) => sum + amountValue(tx.debit), 0);
+  const totalCredit = filtered.filter((tx) => !tx.is_ignored).reduce((sum, tx) => sum + amountValue(tx.credit), 0);
   const unledgered = filtered.filter((tx) => !tx.confirmed_ledger).length;
 
   const columns: ColDef<Transaction>[] = useMemo(

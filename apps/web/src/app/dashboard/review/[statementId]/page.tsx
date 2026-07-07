@@ -4,11 +4,13 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowLeft } from "lucide-react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import ExportModal, { type ExportJob } from "@/components/ExportModal";
 import { PDFViewer, type BboxCoords } from "@/components/PDFViewer";
 import { TransactionTable } from "@/components/TransactionTable";
 import { OcrStatusScreen } from "@/components/OcrStatusScreen";
 import { useUndoRedo } from "@/components/useUndoRedo";
+import { useReviewStore } from "@/lib/local-store";
 
 const API = "/api";
 
@@ -90,13 +92,23 @@ function statusClass(status: string) {
 export default function ReviewPage() {
   const params = useParams<{ statementId: string }>();
   const statementId = params.statementId;
-  const [statement, setStatement] = useState<StatementMeta | null>(null);
-  const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [pagination, setPagination] = useState<{ total: number; pages: number } | null>(null);
-  const [activeTab, setActiveTab] = useState<"transactions" | "pdf">("transactions");
   const [toasts, setToasts] = useState<Toast[]>([]);
+  
+  // Zustand store for UI states
+  const {
+    selectedPage,
+    selectedBbox,
+    activeTab,
+    setSelectedPage,
+    setSelectedBbox,
+    setActiveTab,
+  } = useReviewStore();
+
   const {
     state: transactions,
     set: setTransactions,
@@ -108,8 +120,6 @@ export default function ReviewPage() {
   } = useUndoRedo<Transaction[]>([]);
   const [enriching, setEnriching] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
-  const [selectedPage, setSelectedPage] = useState<number | null>(null);
-  const [selectedBbox, setSelectedBbox] = useState<BboxCoords | null>(null);
 
   const addToast = useCallback((type: Toast["type"], message: string) => {
     const id = Date.now();
@@ -124,82 +134,68 @@ export default function ReviewPage() {
     [statementId]
   );
 
-  const loadStatement = useCallback(async () => {
-    const res = await fetch(`${API}/v1/statements/${statementId}/status`, {
-      headers: authHeaders(),
-    });
-    if (!res.ok) throw new Error("Failed to load statement");
-    const data = unwrap<StatusPayload>(await res.json());
-    setStatement({
-      id: data.id,
-      filename: data.filename ?? "statement",
-      bank: data.bank ?? data.bank_code ?? data.bank_id ?? "Unknown",
-      file_type: data.file_type,
-      error: data.error,
-      status: data.status,
-    });
-  }, [statementId]);
+  // TanStack Query for Statement Meta
+  const { data: statement } = useQuery<StatementMeta>({
+    queryKey: ["statement", statementId],
+    queryFn: async () => {
+      const res = await fetch(`${API}/v1/statements/${statementId}/status`, {
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error("Failed to load statement");
+      const json = await res.json();
+      const data = unwrap<StatusPayload>(json);
+      return {
+        id: data.id,
+        filename: data.filename ?? "statement",
+        bank: data.bank ?? data.bank_code ?? data.bank_id ?? "Unknown",
+        file_type: data.file_type,
+        error: data.error,
+        status: data.status,
+      };
+    },
+  });
 
-  const loadTransactions = useCallback(async () => {
-    setLoading(true);
-    try {
+  // TanStack Query for Transactions list
+  const { data: txsData, isLoading: loading } = useQuery<TransactionsPayload>({
+    queryKey: ["transactions", statementId, page, pageSize],
+    queryFn: async () => {
       const res = await fetch(
         `${API}/v1/statements/${statementId}/transactions?page=${page}&size=${pageSize}`,
         { headers: authHeaders() }
       );
       if (!res.ok) throw new Error("Failed to load transactions");
-      const data = unwrap<TransactionsPayload>(await res.json());
-      resetTransactions(data.items ?? []);
-      setPagination({ total: data.total ?? 0, pages: data.pages ?? 1 });
-    } finally {
-      setLoading(false);
+      const json = await res.json();
+      return unwrap<TransactionsPayload>(json);
+    },
+  });
+
+  // Sync loaded transactions to useUndoRedo state
+  useEffect(() => {
+    if (txsData?.items) {
+      resetTransactions(txsData.items);
+      setPagination({ total: txsData.total ?? 0, pages: txsData.pages ?? 1 });
     }
-  }, [page, pageSize, resetTransactions, statementId]);
+  }, [txsData, resetTransactions]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const run = async () => {
-      try {
-        await loadStatement();
-      } catch {
-        if (!cancelled) addToast("error", "Could not load statement");
-      }
-    };
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [addToast, loadStatement]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const run = async () => {
-      try {
-        await loadTransactions();
-      } catch {
-        if (!cancelled) addToast("error", "Could not load transactions");
-      }
-    };
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [addToast, loadTransactions]);
-
+  // WebSocket cache invalidations
   useEffect(() => {
     const wsUrl = `${API.replace(/^http/, "ws")}/v1/ws/statements/${statementId}`;
     const socket = new WebSocket(wsUrl);
     socket.onmessage = (event) => {
       const data = JSON.parse(event.data);
       if (data.type === "status") {
-        setStatement((current) => current ? { ...current, status: data.status } : current);
+        queryClient.setQueryData(["statement", statementId], (old: any) =>
+          old ? { ...old, status: data.status } : old
+        );
+        queryClient.invalidateQueries({ queryKey: ["statement", statementId] });
+        queryClient.invalidateQueries({ queryKey: ["transactions", statementId] });
       }
       if (data.type === "ping") {
         socket.send(JSON.stringify({ type: "pong" }));
       }
     };
     return () => socket.close();
-  }, [statementId]);
+  }, [statementId, queryClient]);
 
   const handleRowClick = useCallback((txId: string, pageNumber: number | null, bbox: BboxCoords | null) => {
     if (pageNumber) {
@@ -208,49 +204,84 @@ export default function ReviewPage() {
       // On mobile, auto-switch to PDF tab
       setActiveTab("pdf");
     }
-  }, []);
+  }, [setSelectedPage, setSelectedBbox, setActiveTab]);
 
   const isReadOnly = statement?.status === "REVIEWED" || statement?.status === "EXPORTED";
   const canExport = statement?.status === "READY_FOR_REVIEW" || statement?.status === "REVIEWED" || statement?.status === "EXPORTED";
 
-  const updateTransaction = async (txId: string, changes: Partial<Transaction>) => {
-    if (isReadOnly) { addToast("error", "Statement is reviewed and locked — no edits allowed."); return; }
-    const before = transactions;
-    const next = before.map((tx) => (tx.id === txId ? { ...tx, ...changes } : tx));
-    setTransactions(next);
-
-    try {
+  // Mutations
+  const updateMutation = useMutation({
+    mutationFn: async ({ txId, changes }: { txId: string; changes: Partial<Transaction> }) => {
       const res = await fetch(`${API}/v1/statements/${statementId}/transactions/${txId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(changes),
       });
       if (!res.ok) throw new Error("Save failed");
+      return res.json();
+    },
+    onMutate: async ({ txId, changes }) => {
+      await queryClient.cancelQueries({ queryKey: ["transactions", statementId] });
+      const previous = queryClient.getQueryData(["transactions", statementId, page, pageSize]);
+      
+      const next = transactions.map((tx) => (tx.id === txId ? { ...tx, ...changes } : tx));
+      setTransactions(next);
+      
+      return { previous };
+    },
+    onError: (err, variables, context: any) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["transactions", statementId, page, pageSize], context.previous);
+        resetTransactions((context.previous as TransactionsPayload).items ?? []);
+      }
+      addToast("error", err.message || "Save failed");
+    },
+    onSuccess: () => {
       addToast("success", "Saved");
-    } catch (error) {
-      resetTransactions(before);
-      addToast("error", error instanceof Error ? error.message : "Save failed");
-    }
-  };
+      queryClient.invalidateQueries({ queryKey: ["transactions", statementId] });
+    },
+  });
 
-  const bulkUpdateTransactions = async (txIds: string[], changes: Partial<Transaction>) => {
-    if (isReadOnly) { addToast("error", "Statement is reviewed and locked — no edits allowed."); return; }
-    const before = transactions;
-    const next = before.map((tx) => (txIds.includes(tx.id) ? { ...tx, ...changes } : tx));
-    setTransactions(next);
-
-    try {
+  const bulkUpdateMutation = useMutation({
+    mutationFn: async ({ txIds, changes }: { txIds: string[]; changes: Partial<Transaction> }) => {
       const res = await fetch(`${API}/v1/statements/${statementId}/transactions/bulk-update`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ updates: txIds.map((id) => ({ id, ...changes })) }),
       });
       if (!res.ok) throw new Error("Bulk save failed");
-      addToast("success", `Updated ${txIds.length} transactions`);
-    } catch (error) {
-      resetTransactions(before);
-      addToast("error", error instanceof Error ? error.message : "Bulk save failed");
-    }
+      return res.json();
+    },
+    onMutate: async ({ txIds, changes }) => {
+      await queryClient.cancelQueries({ queryKey: ["transactions", statementId] });
+      const previous = queryClient.getQueryData(["transactions", statementId, page, pageSize]);
+      
+      const next = transactions.map((tx) => (txIds.includes(tx.id) ? { ...tx, ...changes } : tx));
+      setTransactions(next);
+      
+      return { previous };
+    },
+    onError: (err, variables, context: any) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["transactions", statementId, page, pageSize], context.previous);
+        resetTransactions((context.previous as TransactionsPayload).items ?? []);
+      }
+      addToast("error", err.message || "Bulk save failed");
+    },
+    onSuccess: (_, variables) => {
+      addToast("success", `Updated ${variables.txIds.length} transactions`);
+      queryClient.invalidateQueries({ queryKey: ["transactions", statementId] });
+    },
+  });
+
+  const updateTransaction = (txId: string, changes: Partial<Transaction>) => {
+    if (isReadOnly) { addToast("error", "Statement is reviewed and locked — no edits allowed."); return; }
+    updateMutation.mutate({ txId, changes });
+  };
+
+  const bulkUpdateTransactions = (txIds: string[], changes: Partial<Transaction>) => {
+    if (isReadOnly) { addToast("error", "Statement is reviewed and locked — no edits allowed."); return; }
+    bulkUpdateMutation.mutate({ txIds, changes });
   };
 
   const syncUndoRedoToBackend = async (targetState: Transaction[] | null, beforeState: Transaction[]) => {
@@ -334,14 +365,14 @@ export default function ReviewPage() {
           }
           if (jobPayload.status === "COMPLETED") {
             addToast("success", "Enrichment complete");
-            await loadTransactions();
+            queryClient.invalidateQueries({ queryKey: ["transactions", statementId] });
             return;
           }
         }
         throw new Error("Enrichment is still running. Please refresh shortly.");
       }
       addToast("success", `Enriched ${data.updated} transactions`);
-      await loadTransactions();
+      queryClient.invalidateQueries({ queryKey: ["transactions", statementId] });
     } catch (error) {
       addToast("error", error instanceof Error ? error.message : "Enrichment failed");
     } finally {
@@ -357,7 +388,7 @@ export default function ReviewPage() {
         body: JSON.stringify({ status: "REVIEWED" }),
       });
       if (!res.ok) throw new Error("Could not mark reviewed");
-      setStatement((current) => current ? { ...current, status: "REVIEWED" } : current);
+      queryClient.invalidateQueries({ queryKey: ["statement", statementId] });
       addToast("success", "Marked reviewed");
     } catch (error) {
       addToast("error", error instanceof Error ? error.message : "Could not mark reviewed");
@@ -365,7 +396,7 @@ export default function ReviewPage() {
   };
 
   const handleExportComplete = (job: ExportJob) => {
-    setStatement((current) => current ? { ...current, status: "EXPORTED" } : current);
+    queryClient.invalidateQueries({ queryKey: ["statement", statementId] });
     addToast("success", job.idempotent ? "Export is ready" : "Statement exported");
   };
 
@@ -398,9 +429,9 @@ export default function ReviewPage() {
         <OcrStatusScreen
           statementId={statementId}
           status={statement.status}
-          onComplete={async () => {
-            await loadStatement();
-            await loadTransactions();
+          onComplete={() => {
+            queryClient.invalidateQueries({ queryKey: ["statement", statementId] });
+            queryClient.invalidateQueries({ queryKey: ["transactions", statementId] });
           }}
         />
       )}

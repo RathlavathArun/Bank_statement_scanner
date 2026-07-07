@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -14,7 +15,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
 from core.observability import get_tracer
-from core.pii_masker import mask_for_llm
+from core.pii_masker import mask_for_llm, validate_no_pii
+
+logger = logging.getLogger(__name__)
+
+
+class LedgerValidationError(ValueError):
+    """Raised when the LLM returns a ledger name outside of the allowed client ledgers."""
+    pass
+
 
 tracer = get_tracer("bank-statement-scanner")
 from db.models import Ledger, Transaction
@@ -317,6 +326,9 @@ async def claude_enrich_batch(
         "Use null when unsure."
     )
 
+    payload_str = json.dumps(transactions_payload(transactions))
+    validate_no_pii(payload_str)
+
     async with httpx.AsyncClient(timeout=20.0) as client:
         # ── Build request headers ──────────────────────────────────────────
         headers: dict[str, str] = {
@@ -326,28 +338,39 @@ async def claude_enrich_batch(
         }
         # Task 14 — ZDR: attach the zero-data-retention beta header so
         # Anthropic does NOT log or retain prompt/response data.
-        # Only active after the ZDR agreement has been signed in the
-        # Anthropic console (https://console.anthropic.com/settings/privacy).
-        if settings.ANTHROPIC_ZDR_ENABLED:
+        if settings.ANTHROPIC_ZDR_ENABLED or settings.ANTHROPIC_ZERO_DATA_RETENTION:
             headers["anthropic-beta"] = "zero-data-retention-2024-02-23"
 
-        response = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers=headers,
-            json={
-                "model": effective_model,
-                "max_tokens": 2048,
-                "tools": [tool_schema],
-                "tool_choice": {"type": "tool", "name": "parse_bank_narrations"},
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": f"{prompt}\n\nTransactions:\n{json.dumps(transactions_payload(transactions))}",
-                    }
-                ],
-            },
-        )
-        response.raise_for_status()
+        max_retries = 3
+        backoff = 1.0
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers=headers,
+                    json={
+                        "model": effective_model,
+                        "max_tokens": 2048,
+                        "tools": [tool_schema],
+                        "tool_choice": {"type": "tool", "name": "parse_bank_narrations"},
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": f"{prompt}\n\nTransactions:\n{payload_str}",
+                            }
+                        ],
+                    },
+                )
+                response.raise_for_status()
+                break
+            except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                if attempt == max_retries - 1:
+                    logger.error("Claude API call failed after %d attempts", max_retries)
+                    raise
+                sleep_time = backoff * (2 ** attempt)
+                logger.warning("Claude API call failed: %s. Retrying in %s seconds...", exc, sleep_time)
+                await asyncio.sleep(sleep_time)
 
     content = response.json().get("content", [])
     tool_input = next(
@@ -372,10 +395,12 @@ async def claude_enrich_batch(
         confidence = Decimal(str(item.get("confidence") or 0)).quantize(Decimal("0.001"))
 
         # Task 17: reject any ledger name the model hallucinated outside the
-        # allowed set. Null it out rather than silently accepting it.
+        # allowed set. Raise LedgerValidationError instead of silently nulling it.
         raw_ledger = item.get("suggested_ledger")
         if allowed_set and raw_ledger and raw_ledger not in allowed_set:
-            raw_ledger = None
+            raise LedgerValidationError(
+                f"Validation failed: suggested ledger '{raw_ledger}' is not in the client allowed ledgers list."
+            )
 
         results.append(
             EnrichmentResult(
@@ -420,29 +445,45 @@ async def gpt4o_enrich_batch(
         "confidence (0-1 float). "
         + ledger_instruction
     )
+    payload_str = json.dumps(transactions_payload(transactions))
+    validate_no_pii(payload_str)
+
     user_content = (
         "Return a JSON array named 'items' with one object per transaction.\n\n"
-        f"Transactions:\n{json.dumps(transactions_payload(transactions))}"
+        f"Transactions:\n{payload_str}"
     )
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": settings.OPENAI_FALLBACK_MODEL,
-                "response_format": {"type": "json_object"},
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                "max_tokens": 2048,
-            },
-        )
-        response.raise_for_status()
+        max_retries = 3
+        backoff = 1.0
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.OPENAI_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": settings.OPENAI_FALLBACK_MODEL,
+                        "response_format": {"type": "json_object"},
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_content},
+                        ],
+                        "max_tokens": 2048,
+                    },
+                )
+                response.raise_for_status()
+                break
+            except (httpx.HTTPError, httpx.TimeoutException) as exc:
+                if attempt == max_retries - 1:
+                    logger.error("OpenAI API call failed after %d attempts", max_retries)
+                    raise
+                sleep_time = backoff * (2 ** attempt)
+                logger.warning("OpenAI API call failed: %s. Retrying in %s seconds...", exc, sleep_time)
+                await asyncio.sleep(sleep_time)
 
     raw = response.json()["choices"][0]["message"]["content"]
     items = json.loads(raw).get("items", [])
@@ -458,7 +499,9 @@ async def gpt4o_enrich_batch(
         # Task 17 guard: reject ledger names outside the allowed set.
         raw_ledger = item.get("suggested_ledger")
         if allowed_set and raw_ledger and raw_ledger not in allowed_set:
-            raw_ledger = None
+            raise LedgerValidationError(
+                f"Validation failed: suggested ledger '{raw_ledger}' is not in the client allowed ledgers list."
+            )
 
         results.append(
             EnrichmentResult(
@@ -592,7 +635,7 @@ async def detect_recurring(
         return {}
 
     # Fetch confirmed mappings for these exact patterns in one query
-    from db.models import LedgerMapping
+    from db.models import LedgerMapping, Statement
     rows = await db.execute(
         select(LedgerMapping).where(
             LedgerMapping.client_id == client_id,
@@ -602,23 +645,79 @@ async def detect_recurring(
     )
     mappings = rows.scalars().all()
 
+    # Fetch last 200 confirmed transactions for the client to compare amounts and dates
+    hist_rows = await db.execute(
+        select(Transaction)
+        .join(Statement)
+        .where(
+            Statement.client_id == client_id,
+            Transaction.confirmed_ledger.isnot(None),
+        )
+        .order_by(Transaction.txn_date.desc())
+        .limit(200)
+    )
+    hist_txs = hist_rows.scalars().all()
+
+    hist_by_pattern: dict[str, list[Transaction]] = {}
+    for h_tx in hist_txs:
+        p = normalize_narration(h_tx.narration_clean or h_tx.narration)
+        if p:
+            hist_by_pattern.setdefault(p, []).append(h_tx)
+
     matched: dict[str, EnrichmentResult] = {}
     for mapping in mappings:
         for tx in pattern_to_txs.get(mapping.pattern, []):
-            narration_clean = clean_narration(tx.narration or "")
-            payment_mode = detect_payment_mode(tx.narration or "")
-            counterparty = detect_counterparty(tx.narration or "", narration_clean)
-            confidence = Decimal("0.920")  # high confidence for confirmed recurring patterns
-            matched[tx.id] = EnrichmentResult(
-                transaction_id=tx.id,
-                narration_clean=narration_clean,
-                payment_mode=payment_mode,
-                counterparty=counterparty,
-                suggested_ledger=mapping.ledger_name,
-                confidence=confidence,
-                source="recurring",
-                cache_status="MISS",
-            )
+            h_list = hist_by_pattern.get(mapping.pattern, [])
+            
+            # Amount and date cycle validation
+            matched_hist = False
+            for h_tx in h_list:
+                if h_tx.confirmed_ledger != mapping.ledger_name:
+                    continue
+                # Verify both are debits or both are credits
+                if (tx.debit is not None) != (h_tx.debit is not None):
+                    continue
+
+                tx_amt = tx.debit if tx.debit is not None else tx.credit
+                h_amt = h_tx.debit if h_tx.debit is not None else h_tx.credit
+                if tx_amt is None or h_amt is None:
+                    continue
+
+                # Amount similarity (within 10% delta)
+                diff = abs(tx_amt - h_amt)
+                max_amt = max(tx_amt, h_amt)
+                if max_amt > 0 and (diff / max_amt) > Decimal("0.10"):
+                    continue
+
+                # Date cycle (weekly, biweekly, monthly, or same day of month +/- 5 days)
+                days_diff = abs((tx.txn_date - h_tx.txn_date).days)
+                day_of_month_match = abs(tx.txn_date.day - h_tx.txn_date.day) <= 5
+                cycle_match = (
+                    (days_diff >= 6 and days_diff <= 8) or
+                    (days_diff >= 12 and days_diff <= 16) or
+                    (days_diff >= 25 and days_diff <= 35) or
+                    (days_diff % 30 <= 5) or
+                    (days_diff % 30 >= 25)
+                )
+                if day_of_month_match or cycle_match:
+                    matched_hist = True
+                    break
+
+            if matched_hist:
+                narration_clean = clean_narration(tx.narration or "")
+                payment_mode = detect_payment_mode(tx.narration or "")
+                counterparty = detect_counterparty(tx.narration or "", narration_clean)
+                confidence = Decimal("0.920")  # high confidence for confirmed recurring patterns
+                matched[tx.id] = EnrichmentResult(
+                    transaction_id=tx.id,
+                    narration_clean=narration_clean,
+                    payment_mode=payment_mode,
+                    counterparty=counterparty,
+                    suggested_ledger=mapping.ledger_name,
+                    confidence=confidence,
+                    source="recurring",
+                    cache_status="MISS",
+                )
     return matched
 
 

@@ -77,7 +77,10 @@ def serialize_export_transaction(tx: Transaction) -> dict[str, Any]:
 async def load_transactions(db: AsyncSession, statement_id: str) -> list[Transaction]:
     result = await db.execute(
         select(Transaction)
-        .where(Transaction.statement_id == statement_id)
+        .where(
+            Transaction.statement_id == statement_id,
+            Transaction.is_ignored.is_(False)
+        )
         .order_by(Transaction.row_number)
     )
     return list(result.scalars().all())

@@ -5,20 +5,14 @@ import base64
 from pathlib import Path
 from fastapi import APIRouter, Request, Response, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from core.database import get_db
+from db.database import get_db
 from auth.dependencies import get_current_user
 from db.models import User, Statement
-from core.security import get_or_create_firm_client
-from core.telemetry import tracer
+from core.observability import get_tracer
+tracer = get_tracer("bank-statement-scanner")
 from core.config import settings
-from .router import (
-    UPLOAD_DIR,
-    scan_bytes,
-    file_type_for,
-    notify_status_change,
-    process_statement_job,
-    update_job_progress,
-)
+UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # Late imports to avoid circular dependency if celery tasks are imported
 from .tasks import process_statement_task
@@ -188,6 +182,14 @@ async def _finalize_tus_upload(uid: str, info: dict, bin_path: Path, db: AsyncSe
     bank = meta.get("bank", None)
     password = meta.get("password", None)
     
+    from .router import (
+        get_or_create_firm_client,
+        scan_bytes,
+        file_type_for,
+        notify_status_change,
+        process_statement_job,
+        update_job_progress,
+    )
     client = await get_or_create_firm_client(db, current_user)
     
     with tracer.start_as_current_span("upload_file_tus") as span:

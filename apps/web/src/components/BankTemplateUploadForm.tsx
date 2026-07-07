@@ -3,9 +3,14 @@
  */
 "use client";
 
-import { FormEvent, useRef, useState } from "react";
+"use client";
+
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { uploadBank } from "@/lib/bank-service";
@@ -47,16 +52,40 @@ extraction:
     number: "indian"
 `;
 
+const UploadTemplateSchema = z.object({
+  bankCode: z
+    .string()
+    .min(1, "Bank code is required")
+    .regex(/^[A-Za-z0-9_]+$/, "Bank code must be alphanumeric (letters, numbers, underscores)"),
+  bankName: z
+    .string()
+    .min(1, "Bank name is required")
+    .max(100, "Bank name is too long"),
+});
+
+type UploadTemplateFormValues = z.infer<typeof UploadTemplateSchema>;
+
 export default function BankTemplateUploadForm() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [bankCode, setBankCode] = useState("");
-  const [bankName, setBankName] = useState("");
   const [file, setFile] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [preview, setPreview] = useState<string>("");
+
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    formState: { errors, isSubmitting },
+  } = useForm<UploadTemplateFormValues>({
+    resolver: zodResolver(UploadTemplateSchema),
+    defaultValues: {
+      bankCode: "",
+      bankName: "",
+    },
+    mode: "onTouched",
+  });
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -81,16 +110,15 @@ export default function BankTemplateUploadForm() {
     setError(null);
 
     // Try to extract bank code from filename
-    const filename = selectedFile.name.split(".")[0].toLowerCase();
-    setBankCode(filename);
+    const filename = selectedFile.name.split(".")[0].toUpperCase();
+    setValue("bankCode", filename, { shouldValidate: true, shouldDirty: true });
 
     // Show file preview
     const text = await selectedFile.text();
     setPreview(text);
   };
 
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
+  const onSubmit = async (values: UploadTemplateFormValues) => {
     setError(null);
 
     if (!file) {
@@ -98,23 +126,10 @@ export default function BankTemplateUploadForm() {
       return;
     }
 
-    if (!bankCode.trim()) {
-      setError("Bank code is required");
-      return;
-    }
-
-    if (!bankName.trim()) {
-      setError("Bank name is required");
-      return;
-    }
-
     try {
-      setLoading(true);
-      await uploadBank(file, bankCode, bankName);
+      await uploadBank(file, values.bankCode, values.bankName);
       setSuccess(true);
       setFile(null);
-      setBankCode("");
-      setBankName("");
       setPreview("");
 
       // Redirect after success
@@ -125,8 +140,6 @@ export default function BankTemplateUploadForm() {
       const message = err instanceof Error ? err.message : "Upload failed";
       setError(message);
       console.error("Upload error:", err);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -171,7 +184,7 @@ export default function BankTemplateUploadForm() {
           </p>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-6">
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
             {error && (
               <div className="flex gap-3 p-4 bg-red-50 border border-red-200 rounded-lg">
                 <AlertCircle
@@ -218,11 +231,13 @@ export default function BankTemplateUploadForm() {
               </label>
               <input
                 type="text"
-                value={bankCode}
-                onChange={(e) => setBankCode(e.target.value.toUpperCase())}
                 placeholder="e.g., HDFC, ICICI, SBI"
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${errors.bankCode ? "border-red-500 focus:ring-red-500/20" : "border-gray-300"}`}
+                {...register("bankCode")}
               />
+              {errors.bankCode && (
+                <p className="text-xs text-red-500">{errors.bankCode.message}</p>
+              )}
               <p className="text-xs text-gray-500">
                 Unique identifier for the bank
               </p>
@@ -235,11 +250,13 @@ export default function BankTemplateUploadForm() {
               </label>
               <input
                 type="text"
-                value={bankName}
-                onChange={(e) => setBankName(e.target.value)}
                 placeholder="e.g., HDFC Bank Ltd."
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${errors.bankName ? "border-red-500 focus:ring-red-500/20" : "border-gray-300"}`}
+                {...register("bankName")}
               />
+              {errors.bankName && (
+                <p className="text-xs text-red-500">{errors.bankName.message}</p>
+              )}
             </div>
 
             {/* File Preview */}
@@ -269,10 +286,10 @@ export default function BankTemplateUploadForm() {
             <div className="flex gap-3 pt-4">
               <Button
                 type="submit"
-                disabled={loading || !file}
+                disabled={isSubmitting || !file}
                 className="flex-1 gap-2"
               >
-                {loading ? "Uploading..." : "Upload Template"}
+                {isSubmitting ? "Uploading..." : "Upload Template"}
               </Button>
               <Link href="/manage/banks" className="flex-1">
                 <Button type="button" variant="outline" className="w-full">
