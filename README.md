@@ -678,13 +678,6 @@ Bank_statement_scanner/
 - [x] Regression testing suite & QA evaluation metrics (Extraction & LLM)
 - [x] Prometheus metrics + Grafana monitoring dashboard
 
-### Upcoming 🚧
-- [ ] Bulk statement upload (zip archives extraction)
-- [ ] Direct ledger accounts import from Tally API
-- [ ] Support for regional languages OCR (Hindi, Marathi, etc.)
-- [ ] Cross-account statement reconciliation
-- [ ] Webhook alerts for transaction review completion
-- [ ] OAuth integration (Google Workspace & Microsoft SSO)
 
 ---
 
