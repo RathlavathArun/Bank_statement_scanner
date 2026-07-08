@@ -1,7 +1,10 @@
 $ErrorActionPreference = "Stop"
 
 $AwsRegion = "ap-south-1"
-$AwsAccountId = "911229172121"
+$AwsAccountId = (aws sts get-caller-identity --query Account --output text).Trim()
+if (-not $AwsAccountId -or $AwsAccountId -eq "None") {
+    throw "Could not determine the active AWS account"
+}
 $EcrRegistry = "$AwsAccountId.dkr.ecr.$AwsRegion.amazonaws.com"
 $ApiRepo = "$EcrRegistry/bank-statement-api"
 $ImageTag = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -63,20 +66,33 @@ result = subprocess.run(
     check=True,
 )
 td = json.loads(result.stdout)
-keep = ['family', 'taskRoleArn', 'executionRoleArn', 'networkMode', 'containerDefinitions', 'requiresCompatibilities', 'cpu', 'memory', 'runtimePlatform']
+keep = ['family', 'taskRoleArn', 'executionRoleArn', 'networkMode', 'containerDefinitions', 'volumes', 'requiresCompatibilities', 'cpu', 'memory', 'runtimePlatform']
 new_td = {k: td[k] for k in keep if k in td}
-new_td['containerDefinitions'][0]['image'] = api_image
+containers = {c['name']: c for c in new_td['containerDefinitions']}
+for name in ('uploads-init', 'api', 'celery'):
+    if name in containers:
+        containers[name]['image'] = api_image
 
-env_vars = {e['name']: e for e in new_td['containerDefinitions'][0].get('environment', [])}
+api = containers['api']
+env_vars = {e['name']: e for e in api.get('environment', [])}
 env_vars['EMAIL_PROVIDER'] = {'name': 'EMAIL_PROVIDER', 'value': 'ses'}
 env_vars['AWS_REGION'] = {'name': 'AWS_REGION', 'value': aws_region}
 env_vars['AWS_DEFAULT_REGION'] = {'name': 'AWS_DEFAULT_REGION', 'value': aws_region}
 env_vars['TEXTRACT_REGION'] = {'name': 'TEXTRACT_REGION', 'value': aws_region}
+env_vars['TEXTRACT_ASYNC_ENABLED'] = {'name': 'TEXTRACT_ASYNC_ENABLED', 'value': 'true'}
 if not env_vars.get('SMTP_FROM_EMAIL', {}).get('value'):
     smtp_username = env_vars.get('SMTP_USERNAME', {}).get('value', '')
     if smtp_username:
         env_vars['SMTP_FROM_EMAIL'] = {'name': 'SMTP_FROM_EMAIL', 'value': smtp_username}
-new_td['containerDefinitions'][0]['environment'] = list(env_vars.values())
+api['environment'] = list(env_vars.values())
+if 'celery' in containers:
+    celery_env = {e['name']: e for e in containers['celery'].get('environment', [])}
+    celery_env['AWS_DEFAULT_REGION'] = {'name': 'AWS_DEFAULT_REGION', 'value': aws_region}
+    celery_env['TEXTRACT_REGION'] = {'name': 'TEXTRACT_REGION', 'value': aws_region}
+    celery_env['TEXTRACT_ASYNC_ENABLED'] = {'name': 'TEXTRACT_ASYNC_ENABLED', 'value': 'true'}
+    if 'S3_BUCKET' in env_vars:
+        celery_env['S3_BUCKET'] = env_vars['S3_BUCKET']
+    containers['celery']['environment'] = list(celery_env.values())
 
 with open('api_td_latest.json', 'w') as f:
     json.dump(new_td, f)

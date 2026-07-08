@@ -39,7 +39,12 @@ async def _authenticate_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired",
         )
-    except pyjwt.PyJWTError:
+    except pyjwt.PyJWTError as exc:
+        import logging
+        logging.getLogger("auth.debug").error(
+            "JWT decode failed: %s | token_len=%d | token_prefix=%s",
+            exc, len(token), token[:20] if token else "EMPTY",
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token",

@@ -75,6 +75,15 @@ resource "aws_iam_policy" "s3_access" {
           aws_s3_bucket.documents.arn,
           "${aws_s3_bucket.documents.arn}/*"
         ]
+      },
+      {
+        Action = [
+          "kms:Decrypt",
+          "kms:DescribeKey",
+          "kms:GenerateDataKey"
+        ]
+        Effect   = "Allow"
+        Resource = aws_kms_key.s3.arn
       }
     ]
   })
@@ -249,25 +258,66 @@ resource "aws_ecs_task_definition" "api" {
   family                   = "${var.project_name}-api"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = "512"
-  memory                   = "1024"
-  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
-  task_role_arn            = aws_iam_role.ecs_task_role.arn
+  # API (two Uvicorn workers) and the colocated Celery OCR worker share this
+  # task so they can also share the ephemeral uploads volume.
+  cpu                = "2048"
+  memory             = "4096"
+  execution_role_arn = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn      = aws_iam_role.ecs_task_role.arn
 
   runtime_platform {
     operating_system_family = "LINUX"
     cpu_architecture        = "ARM64"
   }
 
+  volume {
+    name = "uploads"
+  }
+
   container_definitions = jsonencode([
+    {
+      name      = "uploads-init"
+      image     = "nginx:alpine" # deploy.sh replaces this with the API image
+      essential = false
+      user      = "0"
+      command   = ["sh", "-c", "chmod 1777 /app/uploads"]
+      mountPoints = [
+        {
+          sourceVolume  = "uploads"
+          containerPath = "/app/uploads"
+          readOnly      = false
+        }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.ecs.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "uploads-init"
+        }
+      }
+    },
     {
       name      = "api"
       image     = "nginx:alpine" # Placeholder — deploy.sh replaces with real ECR image
       essential = true
+      dependsOn = [
+        {
+          containerName = "uploads-init"
+          condition     = "SUCCESS"
+        }
+      ]
       portMappings = [
         {
           containerPort = 8000
           hostPort      = 8000
+        }
+      ]
+      mountPoints = [
+        {
+          sourceVolume  = "uploads"
+          containerPath = "/app/uploads"
+          readOnly      = false
         }
       ]
       environment = [
@@ -310,6 +360,10 @@ resource "aws_ecs_task_definition" "api" {
         {
           name  = "TEXTRACT_REGION"
           value = var.aws_region
+        },
+        {
+          name  = "TEXTRACT_ASYNC_ENABLED"
+          value = "true"
         },
         {
           name  = "S3_ENDPOINT"
@@ -364,6 +418,71 @@ resource "aws_ecs_task_definition" "api" {
           "awslogs-group"         = aws_cloudwatch_log_group.ecs.name
           "awslogs-region"        = var.aws_region
           "awslogs-stream-prefix" = "api"
+        }
+      }
+    },
+    {
+      name      = "celery"
+      image     = "nginx:alpine" # deploy.sh replaces this with the API image
+      essential = true
+      command   = ["celery", "-A", "core.celery_app.celery_app", "worker", "--loglevel=INFO", "--concurrency=1"]
+      dependsOn = [
+        {
+          containerName = "uploads-init"
+          condition     = "SUCCESS"
+        }
+      ]
+      mountPoints = [
+        {
+          sourceVolume  = "uploads"
+          containerPath = "/app/uploads"
+          readOnly      = false
+        }
+      ]
+      environment = [
+        {
+          name  = "DATABASE_URL"
+          value = "postgresql+asyncpg://${var.db_username}:${var.db_password}@${aws_db_instance.postgres.address}:5432/${var.db_name}"
+        },
+        {
+          name  = "REDIS_URL"
+          value = "redis://${aws_elasticache_cluster.redis.cache_nodes[0].address}:6379/0"
+        },
+        {
+          name  = "CLAMAV_ENABLED"
+          value = "true"
+        },
+        {
+          name  = "CLAMAV_HOST"
+          value = "clamav.${var.project_name}.local"
+        },
+        {
+          name  = "OCR_ENGINE"
+          value = "auto"
+        },
+        {
+          name  = "TEXTRACT_ASYNC_ENABLED"
+          value = "true"
+        },
+        {
+          name  = "TEXTRACT_REGION"
+          value = var.aws_region
+        },
+        {
+          name  = "S3_BUCKET"
+          value = aws_s3_bucket.documents.bucket
+        },
+        {
+          name  = "AWS_DEFAULT_REGION"
+          value = var.aws_region
+        },
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.ecs.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "celery"
         }
       }
     }

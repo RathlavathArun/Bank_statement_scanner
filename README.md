@@ -2,31 +2,32 @@
 
 An AI-powered document extraction pipeline that transforms raw bank statements (PDFs, Excel spreadsheets, CSVs, or scanned images) into clean, structured ledger data ready for double-entry bookkeeping platforms like **Tally Prime**.
 
-> **Multi-tenant SaaS** architecture supporting 17 Indian banks, with intelligent OCR (AWS Textract + Tesseract fallback), LLM-powered narration enrichment (Claude), and real-time WebSocket progress tracking.
+> **Multi-tenant SaaS** architecture supporting 30 Indian banks, with intelligent OCR (AWS Textract + Tesseract fallback), background processing (Celery), resilient resumable uploads (TUS 1.0.0), LLM-powered narration enrichment (Claude 3.5), and real-time WebSocket progress tracking.
 
 ---
 
 ## 📑 Table of Contents
 
 - [Features](#-features)
-- [Architecture](#-architecture)
+- [Architecture & Workflow](#-architecture--workflow)
 - [Tech Stack](#-tech-stack)
 - [Supported Banks](#-supported-banks)
 - [Getting Started](#-getting-started)
   - [Prerequisites](#prerequisites)
-  - [Backend Setup](#1-backend-setup)
-  - [Frontend Setup](#2-frontend-setup)
-  - [Local Infrastructure](#3-local-infrastructure-docker-compose)
+  - [Local Infrastructure (Docker)](#1-local-infrastructure-docker-compose)
+  - [Backend Setup](#2-backend-setup)
+  - [Celery Background Worker Setup](#3-celery-background-worker-setup)
+  - [Frontend Setup](#4-frontend-setup)
 - [API Reference](#-api-reference)
 - [OCR Engines](#-ocr-engines)
 - [Bank Templates](#-bank-templates)
-- [Authentication & Security](#-authentication--security)
+- [Authentication, Security & Compliance](#-authentication-security--compliance)
 - [Database Schema](#-database-schema)
 - [Export Formats](#-export-formats)
-- [LLM Enrichment](#-llm-enrichment)
-- [Testing](#-testing)
+- [LLM Enrichment & Heuristics](#-llm-enrichment--heuristics)
+- [Testing & Quality Assurance](#-testing--quality-assurance)
 - [Deployment](#-deployment)
-- [Monitoring](#-monitoring)
+- [Monitoring & Alerts](#-monitoring--alerts)
 - [Windows Setup](#-windows-setup)
 - [Project Structure](#-project-structure)
 - [Roadmap](#-roadmap)
@@ -38,176 +39,202 @@ An AI-powered document extraction pipeline that transforms raw bank statements (
 
 | Category | Capabilities |
 |---|---|
-| **Document Intake** | Upload PDF (text-based & scanned), Excel (.xlsx/.xls), CSV, and image files |
-| **Smart Parsing** | Template-driven extraction for 17 banks + generic heuristic fallback for unknown formats |
-| **OCR Pipeline** | Three-tier OCR: AWS Textract (sync & async) with automatic Tesseract fallback |
-| **AI Enrichment** | Claude-powered narration parsing — extracts counterparty, payment mode, and ledger suggestions |
-| **Ledger Memory** | Learns from user corrections; optional Qdrant vector similarity for intelligent ledger suggestions |
-| **Multi-Tenant** | Firm → User → Client hierarchy with role-based access (owner / admin / member / viewer) |
-| **Auth System** | Email OTP verification, phone OTP (Twilio), JWT tokens, Argon2id password hashing |
-| **Real-Time Updates** | WebSocket-powered OCR progress and parsing status updates |
-| **Exports** | CSV, Excel, JSON, and Tally Prime XML with signed download URLs |
-| **Admin Panel** | Bank template CRUD, hot-reload, cache management, regression testing dashboard |
-| **Monitoring** | Prometheus metrics + Grafana dashboards out of the box |
-| **LLM Cost Tracking** | Per-statement token usage, content-hash caching to minimize API spend |
+| **Document Intake** | Upload PDF (text-based & scanned), Excel (.xlsx/.xls), CSV, and image files. Supports password-protected PDFs. |
+| **Resumable Uploads** | Integrates **TUS 1.0.0 protocol** for robust, chunked uploads. Supports pausing, resuming, and auto-retrying large files. |
+| **Multi-File Client** | Uppy-powered Next.js interface for selecting and batch-uploading up to 10 files simultaneously. |
+| **Background Processing** | Asynchronous parsing, OCR, narration enrichment, and data exporting run on co-located **Celery** workers. |
+| **Smart Parsing** | Template-driven extraction for 30 Indian banks + generic heuristic fallback for unknown formats. |
+| **OCR Pipeline** | Three-tier OCR: AWS Textract (sync & async) with automatic local Tesseract fallback. |
+| **Malware Protection** | ClamAV scanning integration on all uploaded files before queuing statement parsing. |
+| **AI Enrichment** | Claude 3.5 Haiku narration parsing — extracts counterparty, payment mode, and ledger suggestions with Zero Data Retention (ZDR). |
+| **Ledger Memory** | Learns from user corrections; uses Qdrant vector similarity for intelligent, context-aware ledger suggestions. |
+| **Multi-Tenant** | Firm → User → Client hierarchy with role-based access control (RBAC: owner / admin / member / viewer). |
+| **Auth System** | Email OTP, Twilio SMS OTP, JWT access tokens with short TTL, and secure token refresh helpers. |
+| **Real-Time Updates** | WebSocket-powered OCR progress and parsing status updates. |
+| **Exports** | CSV, Excel, JSON, and Tally Prime XML with signed download URLs. Automatically filters out ignored transactions. |
+| **GA Readiness Tools** | PII masking filters in logging, automated security scans, regression validators, and accuracy evaluators. |
+| **Cost Protection** | Automated AWS scale-down Lambda function triggered by CloudWatch billing alarms when cost thresholds are breached. |
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ Architecture & Workflow
+
+### Infrastructure Diagram
 
 ```mermaid
 graph TD
-    subgraph "Frontend"
-        Web["apps/web<br/>(Next.js 16 Dashboard)"]
+    subgraph "Frontend Client"
+        Web["apps/web<br/>(Next.js 16 App Router)"]
+        Uppy["Uppy File Uploader<br/>(TUS Client)"]
     end
 
-    subgraph "Backend"
-        API["apps/api<br/>(FastAPI)"]
-        OCR["OCR Pipeline<br/>(Textract / Tesseract)"]
-        LLM["LLM Enrichment<br/>(Claude / Heuristic)"]
-        WS["WebSocket Server<br/>(Real-time Updates)"]
+    subgraph "ECS Fargate Task (Co-located Containers)"
+        API["apps/api<br/>(FastAPI Backend)"]
+        Celery["Celery Worker<br/>(OCR & Parsing)"]
+        Init["uploads-init<br/>(Permissions Prep)"]
+        Volume["Shared Local Volume<br/>(/app/uploads)"]
     end
 
-    subgraph "Storage & Services"
-        DB["PostgreSQL / SQLite"]
-        S3["MinIO / S3<br/>(Document Storage)"]
-        Redis["Redis<br/>(Cache / Queues)"]
-        Qdrant["Qdrant<br/>(Vector Similarity)"]
+    subgraph "External Storage & Services"
+        DB["PostgreSQL 16"]
+        S3["Amazon S3 / MinIO<br/>(Storage with KMS)"]
+        Redis["Redis 7<br/>(Broker & Cache)"]
+        Qdrant["Qdrant<br/>(Vector DB)"]
+        ClamAV["ClamAV Service<br/>(Malware Scan)"]
     end
 
-    subgraph "Configuration"
-        Templates["packages/bank-templates<br/>(17 YAML Configs)"]
+    subgraph "AI Services"
+        Textract["AWS Textract<br/>(Sync/Async OCR)"]
+        Claude["Claude 3.5 Haiku<br/>(LLM / ZDR API)"]
     end
 
-    subgraph "Monitoring"
+    subgraph "Observability"
         Prom["Prometheus"]
         Graf["Grafana"]
     end
 
-    Web -->|"HTTP / REST"| API
-    Web -->|"WebSocket"| WS
-    API --> OCR
-    API --> LLM
+    Web --> Uppy
+    Uppy -->|"/v1/statements/tus"| API
+    API -->|Reads/Writes| Volume
+    Celery -->|Reads/Writes| Volume
+    Init -->|Prepares| Volume
     API --> DB
-    API --> S3
     API --> Redis
-    API --> Qdrant
-    API -->|"Reads templates"| Templates
+    API --> ClamAV
+    Celery --> DB
+    Celery --> Redis
+    Celery --> Textract
+    Celery --> Claude
+    Celery --> Qdrant
+    Celery --> S3
     Prom -->|"Scrapes /metrics"| API
-    Graf -->|"Queries"| Prom
+    Graf --> Prom
 ```
 
-### Request Flow
+### Complete End-to-End Workflow
 
 ```mermaid
 sequenceDiagram
-    participant U as User
-    participant W as Web UI
-    participant A as FastAPI
-    participant P as Parser
-    participant O as OCR Engine
-    participant L as LLM (Claude)
-    participant D as Database
+    participant User as User (Client)
+    participant UI as Next.js Dashboard
+    participant API as FastAPI Backend
+    participant AV as ClamAV Service
+    participant Cel as Celery Worker
+    participant Claude as Claude 3.5 Haiku
+    participant WS as WebSocket Channel
 
-    U->>W: Upload bank statement
-    W->>A: POST /v1/statements/upload
-    A->>A: Detect file type & bank
-    A->>D: Create statement record (PARSING)
+    User->>UI: Select Bank & Drag-and-drop Files
+    UI->>API: Initialize TUS upload (/v1/statements/tus)
+    UI->>API: Patch chunk data until complete
+    API->>AV: Scan file for virus/malware
+    AV-->>API: Virus scan clean
+    API->>API: Verify password requirements (if encrypted PDF)
+    API->>Cel: Dispatch process_statement_task
+    API-->>UI: Return Statement ID (Status: UPLOADED)
+    
+    activate Cel
+    Cel->>API: Broadcast stage change: PARSING (progress: 10%)
+    API->>WS: Broadcast progress JSON
+    WS-->>UI: Update progress bar in UI
 
     alt Text-based PDF / CSV / Excel
-        A->>P: Parse with bank template
+        Cel->>Cel: Parse data using YAML templates
     else Scanned PDF / Image
-        A->>O: OCR extraction
-        O-->>A: Structured table data
-        A->>P: Parse OCR output
+        Cel->>Cel: Preprocess images & Deskew
+        Cel->>Cel: Execute AWS Textract Async (fallback to Tesseract)
+        Cel->>Cel: Align bounding boxes & Extract columns
     end
 
-    A-->>W: WebSocket progress updates
-    A->>D: Save transactions (READY_FOR_REVIEW)
-    W->>A: GET /v1/statements/{id}/result
-    U->>W: Review & correct transactions
-    U->>W: Request enrichment
-    W->>A: POST /v1/statements/{id}/transactions/enrich
-    A->>L: Batch narration analysis
-    L-->>A: Counterparty, payment mode, ledger
-    A->>D: Update transactions
-    U->>W: Export
-    W->>A: POST /v1/statements/{id}/export
-    A-->>W: Signed download URL
+    Cel->>Cel: Persist transactions to database
+    Cel->>API: Broadcast stage change: READY_FOR_REVIEW (progress: 100%)
+    API->>WS: Broadcast progress JSON
+    WS-->>UI: Render transaction table
+    deactivate Cel
+
+    User->>UI: Click "Enrich narrations"
+    UI->>API: Request LLM enrichment
+    API->>Cel: Dispatch enrich_transactions_task
+    activate Cel
+    Cel->>Cel: Match transaction heuristics ( UPI, IMPS, RTGS )
+    Cel->>Cel: Check local LLM cache (content-hash matching)
+    Cel->>Claude: Query Claude 3.5 Haiku in batches of 20 (ZDR Enabled)
+    Claude-->>Cel: Extracted counterparty, payment mode, ledger
+    Cel->>Cel: Save suggestions & track API cost usage
+    Cel-->>API: Task complete
+    deactivate Cel
+    API-->>UI: Return enriched transactions
+
+    User->>UI: Select Tally XML & click Export
+    UI->>API: Trigger /v1/statements/{id}/export
+    API->>Cel: Dispatch export_statement_task
+    Cel->>Cel: Filter out ignored transactions & build XML structure
+    Cel->>Cel: Upload XML file to Amazon S3
+    Cel-->>API: File uploaded
+    API-->>UI: Return JWT-signed download URL (15-min TTL)
+    User->>UI: Download file to local storage & Import to Tally
 ```
 
 ---
 
 ## 🛠️ Tech Stack
 
-### Backend (`apps/api`)
+### Backend App ([apps/api](file:///Users/gouthamnaroju/Desktop/ref/Bank_statement_scanner/apps/api))
 
-| Component | Technology |
-|---|---|
-| **Framework** | FastAPI with Uvicorn |
-| **Database ORM** | SQLAlchemy 2.x (Async) |
-| **Database** | SQLite (dev) / PostgreSQL 16 (prod) |
-| **Object Storage** | MinIO (dev) / Amazon S3 (prod) |
-| **Cache / Queues** | Redis 7 |
-| **Vector Store** | Qdrant (optional, for ledger memory) |
-| **Auth** | PyJWT (HS256) + Argon2id password hashing |
-| **PDF Parsing** | pdfplumber (text) + pdf2image + pytesseract (scanned) |
-| **OCR** | AWS Textract (sync + async) / Tesseract with OpenCV |
-| **AI/LLM** | Anthropic Claude 3.5 Haiku (tool-use mode) |
-| **Email** | aiosmtplib (dev) / Amazon SES (prod) |
-| **SMS** | Twilio (phone OTP) |
-| **Metrics** | prometheus-fastapi-instrumentator |
-| **Config** | pydantic-settings + `.env` files |
+- **Framework**: FastAPI (Asynchronous endpoints, Router isolation) + Uvicorn
+- **Task Queue**: Celery (Distributing long-running parsing, exports, and LLM calls)
+- **Database**: PostgreSQL 16 (Production) / SQLite (Development) + SQLAlchemy 2.0 (Async) + Alembic
+- **Resumable Uploads**: TUS 1.0.0 protocol implementation
+- **Malware Protection**: ClamAV daemon integrations
+- **Object Storage**: Amazon S3 (Production with KMS encryption) / MinIO (Local Dev)
+- **Caching & Broker**: Redis 7
+- **Vector Search Database**: Qdrant (Optional, powers ledger suggestion logic)
+- **Security & Cryptography**: PyJWT (HS256) + Argon2id (Password hashing)
+- **OCR Engine Layer**: AWS Textract (Sync & Async client) + pytesseract + pdf2image + OpenCV (Deskew & thresholding)
+- **LLM Enrichment**: Anthropic Claude 3.5 Haiku (Zero Data Retention compliant, Tool-use JSON parsing, exponential backoff)
 
-### Frontend (`apps/web`)
+### Frontend App ([apps/web](file:///Users/gouthamnaroju/Desktop/ref/Bank_statement_scanner/apps/web))
 
-| Component | Technology |
-|---|---|
-| **Framework** | Next.js 16 (App Router, Standalone) |
-| **Language** | TypeScript |
-| **UI Library** | Shadcn UI + Radix UI primitives |
-| **Styling** | Tailwind CSS 4 |
-| **Data Grid** | TanStack React Table |
-| **PDF Viewer** | react-pdf / pdfjs-dist |
-| **Icons** | Lucide React |
+- **Framework**: Next.js 16 (App Router, Standalone build) + React
+- **Upload Library**: Uppy Core + Tus client (Pause, Resume, Retry UI)
+- **State Management**: Zustand (Client auth stores & layout preferences)
+- **Server Cache**: TanStack React Query (Automatic caching, polling, and invalidation)
+- **UI Library**: Shadcn UI + Radix UI primitives + Tailwind CSS 4
+- **Form Management**: React Hook Form + Zod (Validation schemas)
+- **Document Viewing**: react-pdf + PDF.js bounding-box integrations
+- **Data Rendering**: TanStack Table (Filtering, Sorting, Ignored Transaction toggles)
 
-### Infrastructure
+### Infrastructure & Operations ([infra](file:///Users/gouthamnaroju/Desktop/ref/Bank_statement_scanner/infra))
 
-| Component | Technology |
-|---|---|
-| **Containerization** | Docker + Docker Compose |
-| **Cloud Provider** | AWS (ECS Fargate, RDS, ElastiCache, S3, CloudFront, SES) |
-| **IaC** | Terraform |
-| **Monitoring** | Prometheus + Grafana |
-| **CI/CD** | PowerShell / Bash deploy scripts |
+- **Deployment**: AWS ECS Fargate (ARM64 tasks), AWS RDS (PostgreSQL), AWS ElastiCache (Redis), AWS CloudFront (CDN)
+- **Task Co-location**: Colocating `api` and `celery` containers in a single ECS Task definition to share an ephemeral Docker volume for temporary uploads, boosting speed and bypasses expensive S3 writes for staging.
+- **Cost Protection**: CloudWatch billing alarm paired with an AWS Lambda script to scale ECS service counts down to 0 automatically upon cost spikes.
+- **Monitoring**: Prometheus scrape instrumentation + Grafana dash configurations.
 
 ---
 
 ## 🏛️ Supported Banks
 
-The pipeline ships with pre-configured YAML templates for **17 Indian banks**:
+The pipeline parses statements for **30 Indian banks** using optimized YAML configurations:
 
-| # | Bank | Template Code | Regression Tested |
-|---|---|---|---|
-| 1 | AU Small Finance Bank | `au_small_finance` | ✅ |
-| 2 | Axis Bank | `axis` | ✅ |
-| 3 | Bank of Baroda | `bank_of_baroda` | ✅ |
-| 4 | Bank of India | `bank_of_india` | ✅ |
-| 5 | Canara Bank | `canara` | ✅ |
-| 6 | Central Bank of India | `cbi` | ✅ |
-| 7 | Federal Bank | `federal` | ✅ |
-| 8 | HDFC Bank | `hdfc` | ✅ |
-| 9 | ICICI Bank | `icici` | ✅ |
-| 10 | IDFC First Bank | `idfc_first` | ✅ |
-| 11 | IndusInd Bank | `indusind` | ✅ |
-| 12 | Kotak Mahindra Bank | `kotak` | ✅ |
-| 13 | Punjab National Bank | `pnb` | ✅ |
-| 14 | RBL Bank | `rbl` | ✅ |
-| 15 | State Bank of India | `sbi` | ✅ |
-| 16 | Union Bank of India | `union_bank` | ✅ |
-| 17 | Yes Bank | `yes_bank` | ✅ |
+| # | Bank | Template Code | Regression | # | Bank | Template Code | Regression |
+|---|---|---|---|---|---|---|---|
+| 1 | AU Small Finance Bank | `au_small_finance` | ✅ | 16 | IDFC First Bank | `idfc_first` | ✅ |
+| 2 | Axis Bank | `axis` | ✅ | 17 | Indian Bank | `indian_bank` | ✅ |
+| 3 | Bandhan Bank | `bandhan` | ✅ | 18 | IndusInd Bank | `indusind` | ✅ |
+| 4 | Bank of Baroda | `bank_of_baroda` | ✅ | 19 | Indian Overseas Bank | `iob` | ✅ |
+| 5 | Bank of India | `bank_of_india` | ✅ | 20 | Jammu & Kashmir Bank | `jkb` | ✅ |
+| 6 | Bank of Maharashtra | `boma` | ✅ | 21 | Karur Vysya Bank | `karur_vysya` | ✅ |
+| 7 | Canara Bank | `canara` | ✅ | 22 | Kotak Mahindra Bank | `kotak` | ✅ |
+| 8 | Central Bank of India | `cbi` | ✅ | 23 | Punjab National Bank | `pnb` | ✅ |
+| 9 | City Union Bank | `city_union` | ✅ | 24 | Punjab & Sind Bank | `punjab_and_sind_bank` | ✅ |
+| 10 | Dhanlaxmi Bank | `dhanlaxmi` | ✅ | 25 | RBL Bank | `rbl` | ✅ |
+| 11 | Equitas Small Finance | `equitas` | ✅ | 26 | State Bank of India | `sbi` | ✅ |
+| 12 | Federal Bank | `federal` | ✅ | 27 | South Indian Bank | `south_indian_bank` | ✅ |
+| 13 | HDFC Bank | `hdfc` | ✅ | 28 | UCO Bank | `uco` | ✅ |
+| 14 | ICICI Bank | `icici` | ✅ | 29 | Union Bank of India | `union_bank` | ✅ |
+| 15 | IDBI Bank | `idbi` | ✅ | 30 | Yes Bank | `yes_bank` | ✅ |
 
-> **Unknown banks?** The generic heuristic parser automatically detects date, narration, debit, credit, and balance columns using pattern matching and statistical analysis.
+> **Heuristic Auto-Fallback:** If a uploaded file does not match any known template pattern, the parser triggers the `generic_parser.py` ruleset to statistically extract transaction tables.
 
 ---
 
@@ -215,284 +242,148 @@ The pipeline ships with pre-configured YAML templates for **17 Indian banks**:
 
 ### Prerequisites
 
-| Requirement | Version | Notes |
-|---|---|---|
-| **Python** | 3.12+ | Backend API |
-| **Node.js** | 18+ | Frontend |
-| **Docker Desktop** | Latest | Local infrastructure (PostgreSQL, Redis, MinIO, etc.) |
-| **Tesseract OCR** | 5.x | Optional — only needed if not using AWS Textract |
-| **Poppler** | Latest | Required for scanned PDF → image conversion |
-
-### 1. Backend Setup
-
-```bash
-# Navigate to the API directory
-cd apps/api
-
-# Create and activate virtual environment
-python -m venv venv
-source venv/bin/activate        # macOS / Linux
-# venv\Scripts\activate         # Windows
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-**Configure environment variables** — copy the example and edit:
-
-```bash
-cp .env.example .env
-```
-
-Key settings in `.env`:
-
-```env
-# ─── Database ────────────────────────────────────────────────
-DATABASE_URL=sqlite+aiosqlite:///./bank_statements.db
-
-# ─── OCR Engine ──────────────────────────────────────────────
-# Options: "auto" (recommended), "textract", "tesseract"
-OCR_ENGINE=auto
-
-# ─── AWS Credentials (for Textract & S3) ─────────────────────
-AWS_ACCESS_KEY_ID=your-access-key
-AWS_SECRET_ACCESS_KEY=your-secret-key
-AWS_DEFAULT_REGION=ap-south-1
-TEXTRACT_REGION=ap-south-1
-
-# ─── JWT ─────────────────────────────────────────────────────
-JWT_SECRET_KEY=change-this-in-production
-
-# ─── Email (for OTP) ─────────────────────────────────────────
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USERNAME=your-email@gmail.com
-SMTP_PASSWORD=your-app-password
-SMTP_FROM_EMAIL=your-email@gmail.com
-```
-
-> [!WARNING]
-> **Never commit `.env` files to version control.** They contain secrets like AWS credentials, JWT keys, and email passwords. The `.gitignore` should already exclude them.
-
-**Start the API server:**
-
-```bash
-python main.py
-# Or with hot-reload:
-uvicorn main:app --reload --port 8000
-```
-
-Access the interactive API docs at: **http://localhost:8000/docs**
+- **Python** 3.12+
+- **Node.js** 18+ (npm 10+)
+- **Docker Desktop** (local database, redis, clamav, qdrant infrastructure)
+- **Tesseract OCR** (local scanned processing fallback)
+- **Poppler** (PDF-to-image extraction)
 
 ---
 
-### 2. Frontend Setup
+### 1. Local Infrastructure (Docker Compose)
 
-```bash
-# Navigate to the web directory
-cd apps/web
-
-# Install Node dependencies
-npm install
-
-# Start the Next.js dev server
-npm run dev
-```
-
-Access the web application at: **http://localhost:3000**
-
-> [!NOTE]
-> The frontend proxies API requests via Next.js rewrites. By default, it forwards `/api/*` to `http://127.0.0.1:8000`. Configure the `API_URL` environment variable to change this.
-
----
-
-### 3. Local Infrastructure (Docker Compose)
-
-Start all backing services with a single command:
-
+Launch backing servers:
 ```bash
 cd infra
 docker compose up -d
 ```
-
-This launches:
-
-| Service | Port | Purpose |
-|---|---|---|
-| **PostgreSQL 16** | 5432 | Primary database |
-| **Redis 7** | 6379 | Cache & task queues |
-| **MinIO** | 9000 / 9001 (console) | S3-compatible object storage |
-| **Qdrant** | 6333 / 6334 | Vector similarity (ledger memory) |
-| **Prometheus** | 9090 | Metrics collection |
-| **Grafana** | 3001 | Monitoring dashboards |
+This spawns:
+- **PostgreSQL 16** (`localhost:5432`)
+- **Redis 7** (`localhost:6379`)
+- **MinIO** (`localhost:9000` / Console `localhost:9001`)
+- **Qdrant Vector DB** (`localhost:6333`)
+- **ClamAV Antivirus Daemon** (`localhost:3310`)
+- **Prometheus** (`localhost:9090`)
+- **Grafana** (`localhost:3001`)
 
 ---
 
-### 4. Running Parser Experiments
+### 2. Backend Setup
 
-Test PDF parsing independently:
-
+Configure environmental variables:
 ```bash
-cd workers/parser/experiments
-pip install -r requirements.txt
-python pdf_experiment.py <bank_id> <path_to_pdf>
-
-# Example:
-python pdf_experiment.py hdfc sample_hdfc_stmt.pdf
+cd apps/api
+cp .env.example .env
 ```
+Ensure you update `.env` with valid AWS credentials, SMTP configs, and keys.
+
+Setup python virtual environment and run the FastAPI server:
+```bash
+python -m venv venv
+source venv/bin/activate       # On Linux/macOS
+# venv\Scripts\activate        # On Windows
+
+pip install -r requirements.txt
+python main.py
+```
+FastAPI Swagger documentation will be available at **http://localhost:8000/docs**.
+
+---
+
+### 3. Celery Background Worker Setup
+
+Start the Celery worker process locally:
+```bash
+cd apps/api
+source venv/bin/activate
+celery -A core.celery_app.celery_app worker --loglevel=INFO --concurrency=2
+```
+
+---
+
+### 4. Frontend Setup
+
+Install Next.js dependencies and start the app:
+```bash
+cd apps/web
+npm install
+npm run dev
+```
+Open **http://localhost:3000** in your browser.
 
 ---
 
 ## 📡 API Reference
 
-Base URL: `http://localhost:8000`
+Base endpoint: `http://localhost:8000`
 
-### Health & Info
+### Resumable Uploads via TUS (`/v1/statements/tus`)
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/health` | Health check |
-| `GET` | `/` | Service info |
+- `OPTIONS /v1/statements/tus/{uid}`: Retrieve supported TUS features, upload sizes, and extensions.
+- `POST /v1/statements/tus`: Create an upload resource. Set metadata headers (`Upload-Metadata: filename X, bankcode Y, password Z`).
+- `HEAD /v1/statements/tus/{uid}`: Retrieve current chunk upload progress (Upload-Offset and length).
+- `PATCH /v1/statements/tus/{uid}`: Upload raw binary chunk content. Triggers antivirus, validation checks, and launches parser worker upon completion.
+- `DELETE /v1/statements/tus/{uid}`: Cancel upload and wipe temporary binary fragments from disk.
 
-### Authentication (`/v1/auth`)
+### Statements & Review (`/v1/statements`)
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/v1/auth/signup` | Register user + create firm |
-| `POST` | `/v1/auth/login` | Email/password login → JWT tokens |
-| `POST` | `/v1/auth/verify-email` | Verify email with 6-digit OTP |
-| `POST` | `/v1/auth/resend-otp` | Resend verification OTP (rate-limited) |
-| `POST` | `/v1/auth/forgot-password` | Initiate password reset |
-| `POST` | `/v1/auth/reset-password` | Reset password via OTP |
-| `POST` | `/v1/auth/refresh` | Refresh JWT token pair |
-| `POST` | `/v1/auth/login/phone/request` | Request phone OTP (Twilio) |
-| `POST` | `/v1/auth/login/phone/verify` | Verify phone OTP + auto-create user |
-| `GET` | `/v1/auth/me` | Get current user profile |
-
-### Statements (`/v1/statements`)
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/v1/statements/upload` | Upload statement (PDF/CSV/Excel/image) |
-| `GET` | `/v1/statements` | List statements (paginated, filtered) |
-| `GET` | `/v1/statements/{id}/status` | Get parsing status |
-| `GET` | `/v1/statements/{id}/result` | Get parsed transactions |
-| `GET` | `/v1/statements/{id}/file` | Download original uploaded file |
-| `PATCH` | `/v1/statements/{id}/status` | Update statement status |
-| `DELETE` | `/v1/statements/{id}` | Delete statement + associated files |
-
-### Transactions (`/v1/statements/{id}/transactions`)
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/v1/statements/{id}/transactions` | List transactions (paginated, filtered) |
-| `PUT` | `/v1/statements/{id}/transactions/{txId}` | Update single transaction |
-| `POST` | `/v1/statements/{id}/transactions/bulk-update` | Bulk update transactions |
-| `POST` | `/v1/statements/{id}/transactions/enrich` | LLM / heuristic enrichment |
-| `GET` | `/v1/statements/{id}/transactions/{txId}/ledger-suggestions` | Get ledger suggestions |
-| `GET` | `/v1/statements/{id}/llm-usage` | LLM cost tracking |
-
-### Exports (`/v1/statements/{id}/export`)
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/v1/statements/{id}/export` | Create export (CSV/Excel/JSON/Tally XML) |
-| `GET` | `/v1/statements/{id}/exports` | List exports for a statement |
-| `GET` | `/v1/exports/{id}/download` | Download export (signed URL, 15min TTL) |
-| `DELETE` | `/v1/exports/{id}` | Delete an export |
-
-### Admin — Bank Templates (`/admin/banks`)
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/admin/banks` | List all bank templates |
-| `GET` | `/admin/banks/{code}` | Get specific bank template |
-| `POST` | `/admin/banks` | Upload new YAML bank template |
-| `PATCH` | `/admin/banks/{code}` | Update bank template |
-| `DELETE` | `/admin/banks/{code}` | Delete bank template |
-| `GET` | `/admin/banks/{code}/download` | Download template YAML file |
-| `POST` | `/admin/banks/reload/all` | Force reload all templates |
-| `POST` | `/admin/banks/{code}/reload` | Reload specific template |
-| `GET` | `/admin/banks/cache/stats` | Template cache statistics |
-| `DELETE` | `/admin/banks/cache/clear` | Clear template cache |
-
-### Admin — QA & Regression (`/admin/banks/qa`)
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/admin/banks/qa/coverage` | Regression test coverage report |
-| `GET` | `/admin/banks/qa/regression` | Run full regression suite |
-| `GET` | `/admin/banks/qa/failure-alerts` | Extraction failure alerts |
-
-### WebSocket
-
-| Protocol | Endpoint | Description |
-|---|---|---|
-| `WS` | `/v1/ws/statements/{id}` | Real-time parsing status & OCR progress |
+- `GET /v1/statements`: Paginated, filtered list of statement uploads.
+- `GET /v1/statements/{id}/status`: Current parsing lifecycle.
+- `GET /v1/statements/{id}/result`: Extracted transaction rows.
+- `PATCH /v1/statements/{id}/status`: Manually set review status.
+- `POST /v1/statements/{id}/transactions/enrich`: Trigger heuristics + Claude enrichment.
+- `POST /v1/statements/{id}/export`: Initiate background exporter job.
+- `GET /v1/exports/{id}/download`: Get download token (signed MinIO/S3 URL).
 
 ---
 
 ## 🔍 OCR Engines
 
-The pipeline provides three OCR backends with intelligent, config-driven selection:
+When statement processing falls back to scanned document paths, the engine dynamically decides the execution path:
 
-```mermaid
-graph TD
-    A["OCR_ENGINE setting"] -->|"tesseract"| B["TesseractOCREngine"]
-    A -->|"textract"| C{"TEXTRACT_ASYNC_ENABLED?"}
-    A -->|"auto"| D{"AWS credentials valid?"}
-
-    C -->|"true"| E["TextractAsyncOCREngine"]
-    C -->|"false"| F["TextractOCREngine (sync)"]
-
-    D -->|"Yes"| C
-    D -->|"No"| B
-
-    F -->|"Runtime failure (auto mode)"| B
-    E -->|"Runtime failure (auto mode)"| B
+```
+                  [OCR_ENGINE config]
+                           │
+             ┌─────────────┼─────────────┐
+             ▼             ▼             ▼
+       "tesseract"    "textract"      "auto"
+             │             │             │
+             │             ▼             ▼
+             │      [Async Enabled?]  [Verify AWS STS Credentials]
+             │        ┌────┴────┐        ┌──────┴──────┐
+             │       Yes        No      Valid        Invalid
+             │        ▼         ▼        ▼             ▼
+             │     Textract  Textract  [Async?]    Tesseract
+             │      Async      Sync    ┌──┴──┐
+             │                        Yes   No
+             │                         ▼    ▼
+             │                     Textract Textract
+             │                      Async   Sync
+             ▼                        │       │
+      TesseractEngine <───────────────┴───────┘
+                     (On AWS failure fallback)
 ```
 
-### Engine Comparison
-
-| Engine | Class | Use Case | File Limit | Accuracy |
-|---|---|---|---|---|
-| **Tesseract** | `TesseractOCREngine` | Free, local, offline | Unlimited | Good |
-| **Textract Sync** | `TextractOCREngine` | Fast cloud OCR | ≤ 10 MB | Excellent |
-| **Textract Async** | `TextractAsyncOCREngine` | Large files, S3-based | Unlimited | Excellent |
-
-### Tesseract Pipeline (per page)
-
-1. PDF → PIL images at 300 DPI
-2. **Quality detection** — distinguishes screenshots from noisy scans via histogram bimodality + Laplacian variance
-3. **Preprocessing** — Otsu threshold (screenshots) or bilateral filter + adaptive threshold (scans)
-4. **Deskew** — rotation correction via `minAreaRect`
-5. **Table grid detection** — morphological horizontal/vertical line analysis
-6. **Cell extraction** — grid found → cell-by-cell OCR (PSM 7); no grid → full-page word clustering (PSM 6)
-
-### Configuration
-
-```env
-OCR_ENGINE=auto                 # "auto" | "textract" | "tesseract"
-TEXTRACT_REGION=ap-south-1      # AWS region (no leading spaces!)
-TEXTRACT_ASYNC_ENABLED=false    # true for S3-based async processing
-TEXTRACT_FEATURE_TYPES=TABLES   # comma-separated: TABLES,FORMS
-```
-
-> [!IMPORTANT]
-> When using `OCR_ENGINE=auto`, the system validates AWS credentials via STS `GetCallerIdentity` before choosing Textract. If credentials are invalid, it silently falls back to Tesseract. If Textract fails at runtime, it also retries with Tesseract automatically.
+1. **Textract Async**: Offloads parsing of large documents (10+ pages) to an S3 staging workflow.
+2. **Textract Sync**: Evaluated for single/small page documents.
+3. **Tesseract Engine**: Runs locally using custom preprocessing steps:
+   - **Bimodal Histogram Contrast Detection** to flag low-quality scans.
+   - **Deskewing** using horizontal projection profile variance.
+   - **Adaptive Thresholding** to remove noisy scanning grid artifacts.
+   - **Morphological Grid Extraction** for cell-by-cell targeted character recognition.
 
 ---
 
 ## 📋 Bank Templates
 
-Templates are YAML configuration files in `packages/bank-templates/` that tell the parser how to fingerprint and extract data from each bank's statement format.
+Bank statement parsers use bank configurations managed in [packages/bank-templates/](file:///Users/gouthamnaroju/Desktop/ref/Bank_statement_scanner/packages/bank-templates).
 
-### Template Structure
+### Template Format Example (`hdfc.yaml`)
 
 ```yaml
 bank_code: "HDFC"
 bank_name: "HDFC Bank Ltd."
-type: "pdf_text"                          # pdf_text | excel | csv
+type: "pdf_text"
 fingerprint:
   keywords: ["HDFC BANK", "Statement of Account"]
   regex: ["IFSC\\s*:\\s*HDFC000[0-9]{4}"]
@@ -508,386 +399,188 @@ extraction:
     balance: 6
   formats:
     date: "%d/%m/%y"
-    number: "indian"                      # 1,23,456.78 format
+    number: "indian"
 ```
 
-### Hot-Reload
-
-Templates support live hot-reloading:
-- **Filesystem watcher** polls for changes every 1 second
-- **API-triggered reload** via `POST /admin/banks/reload/all` or `POST /admin/banks/{code}/reload`
-- Thread-safe `BankTemplateCache` ensures consistency
-
-### Regression Testing
-
-Every template has automated regression validation:
-- Generates synthetic CSV from template config
-- Parses the CSV and validates ≥ 2 transactions extract correctly
-- Coverage reports and failure alerts (threshold: 5%, minimum 20 samples)
-- Run via `GET /admin/banks/qa/regression`
+- **Live Reloading**: An active directory listener (`template_watcher.py`) hot-reloads bank configurations on file modifications in development and production environments.
+- **Admin Controls**: Dedicated `/admin/banks/reload/all` API reload triggers.
 
 ---
 
-## 🔐 Authentication & Security
+## 🔐 Authentication, Security & Compliance
 
-### Auth Flows
-
-```mermaid
-sequenceDiagram
-    participant U as User
-    participant A as API
-    participant E as Email/SMS
-
-    Note over U,E: Signup Flow
-    U->>A: POST /v1/auth/signup (email, password, firm_name)
-    A->>A: Create User + Firm + FirmMember (owner)
-    A->>A: Hash password (Argon2id)
-    A->>E: Send 6-digit OTP email
-    A-->>U: JWT tokens (access: 15min, refresh: 7d)
-    U->>A: POST /v1/auth/verify-email (otp)
-    A->>A: Validate OTP → email_verified = true
-
-    Note over U,E: Login Flow
-    U->>A: POST /v1/auth/login (email, password)
-    A->>A: Verify Argon2id hash
-    A-->>U: JWT tokens
-
-    Note over U,E: Phone Login
-    U->>A: POST /v1/auth/login/phone/request (phone)
-    A->>E: Send OTP via Twilio SMS
-    U->>A: POST /v1/auth/login/phone/verify (phone, otp)
-    A->>A: Auto-create user if new
-    A-->>U: JWT tokens
-```
-
-### Security Measures
-
-| Mechanism | Implementation |
-|---|---|
-| **Password Hashing** | Argon2id (memory-hard, side-channel resistant) |
-| **JWT Tokens** | HS256 — access: 15 min, refresh: 7 days |
-| **OTP Codes** | Cryptographically secure 6-digit, 10-minute expiry |
-| **Rate Limiting** | Max 5 OTP requests per hour per email |
-| **Email Verification** | Required — unverified users get HTTP 403 |
-| **Data Isolation** | All queries scoped to user's firm via firm membership |
-| **Export URLs** | JWT-signed download URLs with 15-minute TTL |
-| **Audit Logging** | All user actions logged to `audit_logs` table |
+- **Zero Data Retention (ZDR)**: Integrated with Anthropic's ZDR standard headers (`"anthropic-beta": "zero-data-retention"`). Statement data processed by Claude 3.5 is never saved, cached, or used for model fine-tuning.
+- **PII Masking**: Custom logging filter (`log_filter.py`) intercepts audit logs and masks personal identifiers (emails, phone numbers, banking account numbers, API keys) using regex patterns.
+- **ClamAV Anti-Malware**: Scans every upload. Suspicious files raise an immediate validation error (HTTP 422) and are deleted.
+- **Multi-Tenant RLS**: Row-Level Security matches user memberships with Firm identifiers (`firm_id`). Users cannot access, download, or edit files of another firm.
+- **Argon2id Hashing**: High-entropy password encryption protecting stored login records.
+- **Signed URL Expiry**: S3 download links expire in 15 minutes.
 
 ---
 
 ## 🗄️ Database Schema
 
-The application uses 15 ORM models with UUIDv7 primary keys and `NUMERIC(18,2)` for monetary fields:
-
-```mermaid
-erDiagram
-    firms ||--o{ firm_members : "has members"
-    firms ||--o{ clients : "has clients"
-    users ||--o{ firm_members : "belongs to firms"
-    users ||--o{ audit_logs : "generates"
-    clients ||--o{ statements : "has statements"
-    clients ||--o{ ledger_mappings : "has mappings"
-    clients ||--o{ ledgers : "has ledgers"
-    statements ||--o{ transactions : "contains"
-    statements ||--o{ export_jobs : "generates"
-    statements ||--o{ llm_usage : "tracks cost"
-
-    firms {
-        uuid id PK
-        string name
-        string gstin
-        string subscription
-    }
-    users {
-        uuid id PK
-        string email UK
-        string phone
-        string password_hash
-        bool email_verified
-    }
-    statements {
-        uuid id PK
-        uuid client_id FK
-        string file_url
-        string file_type
-        string bank_code
-        string status
-        string account_number
-    }
-    transactions {
-        uuid id PK
-        uuid statement_id FK
-        date txn_date
-        string narration
-        decimal debit
-        decimal credit
-        decimal balance
-        string payment_mode
-        string counterparty
-        string suggested_ledger
-        string confirmed_ledger
-        float confidence
-        float ocr_confidence
-    }
-    export_jobs {
-        uuid id PK
-        uuid statement_id FK
-        string format
-        string status
-        string file_path
-        string download_url
-        datetime expires_at
-    }
-```
-
-### Key Models
-
-| Table | Purpose |
-|---|---|
-| `firms` | Multi-tenant accounting firm entities |
-| `users` | User accounts with email/phone/password |
-| `firm_members` | User ↔ Firm linkage with roles (owner / admin / member / viewer) |
-| `clients` | Individual clients belonging to accounting firms |
-| `statements` | Uploaded statement records with lifecycle status |
-| `transactions` | Extracted transaction rows with enrichment data |
-| `export_jobs` | Export records (CSV/Excel/JSON/Tally XML) |
-| `ledger_mappings` | Learned pattern → ledger associations with hit counts |
-| `ledgers` | Client-specific Tally ledger chart |
-| `llm_cache` | Content-hash-based LLM response deduplication |
-| `llm_usage` | Per-statement LLM cost tracking |
-| `audit_logs` | Security audit trail |
-| `otp_codes` | Email OTP storage |
-| `otps` | Phone OTP storage |
-| `password_reset_tokens` | Password reset flow |
-
-### Statement Lifecycle
+The entity relationship maps accounts, firms, clients, statements, and transaction fields:
 
 ```
-UPLOADED → PARSING → READY_FOR_REVIEW → EXPORTED
-                 ↘ FAILED
+   ┌─────────┐             ┌───────────────┐             ┌───────────┐
+   │  Firms  │────────────o│ Firm_Members  │o────────────│   Users   │
+   └─────────┘             └───────────────┘             └───────────┘
+        │
+        │
+        ▼
+   ┌───────────┐           ┌───────────────┐             ┌──────────────┐
+   │  Clients  │──────────o│  Statements   │────────────o│ Transactions │
+   └───────────┘           └───────────────┘             └──────────────┘
+                                   │                             │
+                                   ├────────────────┐            ├───────────────┐
+                                   ▼                ▼            ▼               ▼
+                             ┌───────────┐    ┌──────────┐  ┌──────────────┐┌──────────────┐
+                             │Export_Jobs│    │LLM_Usage │  │Ledger_Suggest││Ledger_Mapping│
+                             └───────────┘    └──────────┘  └──────────────┘└──────────────┘
 ```
+
+- **Statements lifecycle**: `UPLOADED` ➔ `PARSING` ➔ `READY_FOR_REVIEW` ➔ `EXPORTED` (with `FAILED` error states).
+- **Audit Logs**: Logs actions, IPs, and actions taken across endpoints.
 
 ---
 
 ## 📤 Export Formats
 
-| Format | Extension | Description |
-|---|---|---|
-| **CSV** | `.csv` | UTF-8-sig encoded, includes totals row. Columns: Date, Narration, Debit, Credit, Balance, Payment Mode, Counterparty, Ledger, OCR Confidence, Reviewed |
-| **Excel** | `.xlsx` | openpyxl-based with statement metadata sheet + transactions |
-| **JSON** | `.json` | Structured JSON with full statement metadata + transaction array |
-| **Tally XML** | `.xml` | Full Tally Prime import format — `ENVELOPE/HEADER/BODY/TALLYMESSAGE` structure with Payment/Receipt vouchers and double-entry ledger entries |
-
-### Export Features
-
-- **Idempotent** — re-uses existing valid exports for same format
-- **Signed URLs** — JWT-based download links with 15-minute TTL
-- **Auto-expiry** — exports expire after 24 hours
-- **Regeneration** — automatically regenerates on download if file is missing (container-safe)
+- **Tally Prime XML**: Built to match double-entry rules. Maps inputs into Ledger Voucher imports (`ENVELOPE/BODY/TALLYMESSAGE`).
+- **Excel**: Multi-tab formatting containing original document metadata and detailed lists.
+- **CSV**: UTF-8 encoded files containing all verification confidence rates.
+- **Ignored Transaction Handling**: Transactions flagged as `ignored = true` are excluded from the exported spreadsheets and Tally XML ledger entries. Totals calculations are adjusted accordingly.
 
 ---
 
-## 🤖 LLM Enrichment
+## 🤖 LLM Enrichment & Heuristics
 
-Transaction enrichment uses a **dual pipeline** — fast heuristic rules first, then optional Claude AI for complex narrations:
+The transaction classifier integrates a smart hybrid workflow:
 
-### Heuristic Enrichment (Free, Instant)
-
-- **Payment mode detection**: Regex patterns for UPI, NEFT, RTGS, IMPS, CHEQUE, CASH, CARD
-- **Counterparty extraction**: Pattern matching on narration text
-- **Ledger hints**: Rule-based suggestions from common transaction patterns
-
-### Claude AI Enrichment (Anthropic API)
-
-- **Model**: Claude 3.5 Haiku (tool-use mode)
-- **Batch processing**: Processes narrations in configurable batch sizes (default: 20)
-- **Tool-use format**: Structured output via Claude's tool calling for reliable JSON
-- **Confidence scoring**: Quality-based scores from 0.10 to 0.95
-- **Cost tracking**: Per-statement token usage with content-hash caching to avoid duplicate API calls
-- **Cost estimation**: Configurable rates ($0.80/1M input, $4.00/1M output tokens)
+1. **Regex Heuristic Rules**: Fast patterns check for common modes like UPI (`/UPI/.*`), IMPS, RTGS, Cash, and Card, and extract target counterparties.
+2. **Claude 3.5 AI Batch Mode**: Unresolved narrations are batched in groups of 20 to save tokens.
+3. **Structured Outputs**: Claude's Tool Use API forces responses to parse as a rigid JSON schema, removing parser failures.
+4. **Token Cost-Tracking**: Logs incoming and outgoing token numbers and maps pricing estimates in the dashboard.
+5. **Content-Hash Caching**: Identical narrations are cached in `llm_cache`. If hit, the system reads suggestions without making Anthropic calls.
+6. **Hallucination Detection**: Compares Claude's ledger suggestions against the client's imported Tally chart of accounts. If the ledger is not in the system, it flags the transaction with a warning.
+7. **Recurring Txn Detector**: Analyzes transaction cycles (dates, amount similarity, narration keywords) to flag repeating operations (e.g. rent, salaries, loan EMIs).
 
 ---
 
-## 🧪 Testing
+## 🧪 Testing & Quality Assurance
 
-### Unit Tests (16 test files)
+All verification commands are executed from the backend directory (`apps/api`) or frontend directory (`apps/web`).
 
+### 1. Pytest Unit Tests
+Executes unit tests covering auth validation, template configuration, OCR engines, and export layouts.
 ```bash
 cd apps/api
+source venv/bin/activate
 pytest tests/ -v
 ```
 
-| Test File | Coverage |
-|---|---|
-| `test_statements.py` | Upload, status, result endpoints |
-| `test_transactions.py` | Transaction CRUD operations |
-| `test_ocr_worker.py` | OCR engine unit tests |
-| `test_ocr_confidence.py` | Confidence scoring validation |
-| `test_ocr_engine_selection.py` | Engine selection logic |
-| `test_ocr_table_detection.py` | Table grid detection |
-| `test_textract_engine.py` | AWS Textract engine tests |
-| `test_export_api.py` | Export endpoint tests |
-| `test_exporters.py` | Export format generators |
-| `test_tally_xml.py` | Tally XML generation |
-| `test_excel_parser.py` | Excel file parsing |
-| `test_parser_axis_kotak.py` | Bank-specific parsing |
-| `test_bank_templates_phase6.py` | Template validation |
-| `test_phase6_part_d_regression.py` | Regression test suite |
-| `test_email_service.py` | Email delivery service |
-
-### E2E Tests (Playwright)
-
+### 2. Bank Template Regression Suite
+Verifies YAML configurations against expected transaction data structure:
 ```bash
-npx playwright test
+cd apps/api
+pytest tests/test_phase6_part_d_regression.py -v
 ```
 
-- **Review flow**: Statement review UI + transaction editing
-- **Export flow**: Export creation with signed download URLs
-- **Delete flow**: Statement deletion
-- Uses mocked API routes (no real backend required)
+### 3. Bank Template Coverage Report
+Generates a template validation summary:
+```bash
+cd apps/api
+python core/generate_coverage_report.py
+```
+*Outputs details to `apps/api/coverage_report.json`.*
 
-**Configuration** (`playwright.config.ts`):
-- Browser: Chromium
-- Timeout: 30 seconds
-- Screenshots: captured on failure
+### 4. Automated Security Auditor Scan
+Validates security defaults including SQLi injection risk, dependency security checks, and cross-firm isolation:
+```bash
+cd apps/api
+python core/run_security_scan.py
+```
+*Creates `security_report.md` at project root.*
+
+### 5. Extraction Accuracy Evaluator
+Compares parsed results against gold statement configurations:
+```bash
+cd apps/api
+python core/eval_extraction.py
+```
+*Outputs evaluation score data to `accuracy_report.json`.*
+
+### 6. LLM Categorization Evaluator
+Measures Claude mapping accuracy against benchmark narrations:
+```bash
+cd apps/api
+python core/eval_categorization.py
+```
+*Writes scores to `llm_accuracy_report.json`.*
+
+### 7. Performance Load Tests (k6 / Locust)
+Runs HTTP and WebSocket load tests:
+```bash
+# Using k6 locally
+k6 run ../e2e/load_test.js
+```
+*Generates details in `load_test_report.md`.*
 
 ---
 
 ## 🚢 Deployment
 
-### AWS Architecture (Terraform)
+### ECS Fargate Configuration
 
-The `infra/terraform/` directory contains a full AWS deployment:
+Deployments are orchestrated via Terraform (`infra/terraform`).
 
-| Resource | Configuration |
-|---|---|
-| **VPC** | Public + private subnets |
-| **ECS Fargate** | ARM64 cluster |
-| **ECR** | 3 repositories (web, api, parser) |
-| **Web Task** | 256 CPU / 512 MB |
-| **API Task** | 512 CPU / 1024 MB (higher for OCR/PDF processing) |
-| **RDS** | PostgreSQL |
-| **ElastiCache** | Redis |
-| **S3** | Document storage bucket |
-| **CloudFront** | CDN distribution |
-| **ALB** | Application Load Balancer with target groups |
-| **Cloud Map** | Internal service discovery (DNS) |
-| **CloudWatch** | Log groups with 14-day retention |
-| **IAM** | Scoped roles for S3 access + SES email |
+- **Task Layout**: The ECS API Task definition packs two essential containers: `api` (Uvicorn app) and `celery` (Background tasks), plus `uploads-init`.
+- **Shared Volume**: They mount an ephemeral Docker volume `uploads` on `/app/uploads`. This allows the API to store uploaded statement fragments locally, and Celery to process them directly, avoiding S3 roundtrips during parsing.
+- **Resource Allocation**: Shared CPU is set to 2048 (2 vCPUs) and Memory is set to 4096 (4 GB) to give OCR processing sufficient resources.
 
-### Deploy Commands
+### Auto-Scale Cost Protection
 
-```bash
-# Full deployment (API + Web)
-cd infra
-./deploy.sh
-
-# API-only deployment
-./deploy_api.ps1
-```
-
-The deploy script:
-1. Authenticates to ECR
-2. Builds Docker image
-3. Pushes to ECR
-4. Registers new ECS task definition
-5. Forces new deployment
-6. Waits for service stability
-
-### Docker Build
-
-```bash
-cd apps/api
-docker build -t bank-statement-api .
-
-# Skip Tesseract if using Textract only:
-docker build --build-arg INSTALL_TESSERACT=false -t bank-statement-api .
-```
+A custom Lambda function ([infra/billing_shutdown_lambda.py](file:///Users/gouthamnaroju/Desktop/ref/Bank_statement_scanner/infra/billing_shutdown_lambda.py)) protects against runaway cloud charges:
+1. **Trigger**: An AWS CloudWatch billing alarm fires when expenses breach a set threshold.
+2. **Action**: Fires an SNS notification that triggers the Lambda function.
+3. **Execution**: The Lambda queries all ECS services in the active cluster and scales the desired tasks down to 0, immediately halting further infrastructure costs.
 
 ---
 
-## 📊 Monitoring
+## 📊 Monitoring & Alerts
 
-### Prometheus
-
-- Auto-instrumented via `prometheus-fastapi-instrumentator`
-- Metrics endpoint: `GET /metrics`
-- Config: `docker/prometheus.yml`
-
-### Grafana
-
-- Pre-configured dashboard: `docker/grafana/dashboard.json`
-- Access: `http://localhost:3001` (when using Docker Compose)
-- Tracks: request rates, latencies, error rates, OCR processing times
+- **Prometheus Metrics**: fastapi-instrumentation exports request counts, errors, database connection counts, and processing latency via `GET /metrics`.
+- **Alert Rules**: Prometheus Alertmanager rules in `infra/prometheus_alerts.yml` trigger if statement extraction failure rates exceed 5% within a 5-minute sliding window.
+- **Grafana Dashboard**: Access locally at `http://localhost:3001` (user/pass: `admin/admin`) to monitor latency, CPU limits, database size, and LLM expenses.
 
 ---
 
 ## 🪟 Windows Setup
 
-Windows requires additional steps before the backend will run natively.
+Windows configurations require extra steps to run backend utilities natively:
 
 > [!TIP]
-> **Easiest option**: Run the API inside Docker Desktop (Linux container). The `Dockerfile` installs all system dependencies automatically. Only `apps/web` needs to run natively (`npm run dev`).
+> Running the backend within **Docker Desktop** is highly recommended to avoid local dependencies.
 
-### Step-by-Step for Native Python on Windows
+### Step-by-Step Native Setup
 
-#### 1 — Install Microsoft C++ Build Tools
+1. **C++ Build Tools**: Required by `argon2-cffi`. Install VS Build Tools and select "Desktop development with C++".
+2. **Tesseract OCR**: Download installer from UB-Mannheim and append path to your system's Environment Variables.
+3. **Poppler**: Extract Poppler binaries to a local folder (e.g. `C:\poppler`) and append `C:\poppler\Library\bin` to PATH.
+4. **Local Running**:
+   ```powershell
+   # Launch DB, Redis, etc
+   cd infra
+   docker compose up -d
 
-Required to compile `argon2-cffi` (password hashing library).
-
-1. Download: https://visualstudio.microsoft.com/visual-cpp-build-tools/
-2. Run the installer → select **"Desktop development with C++"**
-3. Restart your terminal after install
-
-#### 2 — Install Tesseract OCR
-
-Required by `pytesseract` (scanned PDF processing).
-
-1. Download installer: https://github.com/UB-Mannheim/tesseract/wiki
-   - File: `tesseract-ocr-w64-setup-*.exe`
-2. Install it (default path: `C:\Program Files\Tesseract-OCR\`)
-3. Add to PATH: **System Properties → Environment Variables → Path → Edit** → add `C:\Program Files\Tesseract-OCR\`
-4. Verify: open a new terminal → `tesseract --version`
-
-#### 3 — Install Poppler
-
-Required by `pdf2image` (PDF-to-image conversion for OCR).
-
-1. Download: https://github.com/oschwartz10612/poppler-windows/releases
-   - File: `Release-*.zip`
-2. Extract to e.g. `C:\poppler\`
-3. Add to PATH: add `C:\poppler\Library\bin`
-4. Verify: open a new terminal → `pdfinfo --version`
-
-#### 4 — Start Infrastructure + Run
-
-```powershell
-# Infrastructure
-cd infra
-docker compose up -d
-
-# API
-cd apps\api
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-python main.py
-
-# Frontend (new terminal)
-cd apps\web
-npm install
-npm run dev
-```
-
-#### Deploying from Windows
-
-```powershell
-# Full deployment (API + Web → ECR → ECS)
-.\infra\deploy.ps1
-
-# API only
-.\deploy_api.ps1
-```
+   # Start backend API
+   cd ..\apps\api
+   python -m venv venv
+   venv\Scripts\activate
+   pip install -r requirements.txt
+   python main.py
+   ```
 
 ---
 
@@ -896,79 +589,67 @@ npm run dev
 ```
 Bank_statement_scanner/
 ├── apps/
-│   ├── api/                          # FastAPI backend
-│   │   ├── auth/                     #   Authentication (signup, login, OTP, JWT)
-│   │   ├── core/                     #   Config, bank loader, template watcher, generic parser
-│   │   ├── db/                       #   SQLAlchemy models, database setup
-│   │   ├── exports/                  #   Export router (CSV, Excel, JSON, Tally XML)
-│   │   ├── statements/              #   Statement processing
-│   │   │   ├── parser.py            #     Main parser (CSV, Excel, PDF)
-│   │   │   ├── ocr_worker.py        #     OCR engines (Tesseract, Textract sync/async)
-│   │   │   ├── llm_enrichment.py    #     Claude AI + heuristic enrichment
-│   │   │   ├── llm_tracking.py      #     LLM cost tracking & caching
-│   │   │   ├── ledger_memory.py     #     Qdrant vector memory for ledger suggestions
-│   │   │   ├── websocket.py         #     WebSocket connection manager
-│   │   │   └── exporters/           #     Format-specific export generators
-│   │   │       ├── csv_exporter.py
-│   │   │       ├── excel_exporter.py
-│   │   │       ├── json_exporter.py
-│   │   │       └── tally_xml.py
-│   │   ├── tests/                    #   16 unit test files
-│   │   ├── main.py                   #   FastAPI app entry point
-│   │   ├── requirements.txt          #   Python dependencies
-│   │   ├── Dockerfile                #   Production container
-│   │   └── .env.example              #   Environment variable template
+│   ├── api/                          # FastAPI Backend Application
+│   │   ├── auth/                     #   Auth flows, OTP, JWT helpers
+│   │   │   └── dependencies.py       #     Auth dependency injection & JWT decoding
+│   │   ├── core/                     #   Core engine files & utilities
+│   │   │   ├── antivirus.py          #     ClamAV antivirus connector
+│   │   │   ├── bank_loader.py        #     Loads YAML configurations
+│   │   │   ├── bank_regression.py    #     Runs bank template parsing checks
+│   │   │   ├── celery_app.py         #     Celery application bootstrap config
+│   │   │   ├── config.py             #     Pydantic environment config settings
+│   │   │   ├── eval_categorization.py#     Narration categorizer benchmarking script
+│   │   │   ├── eval_extraction.py    #     Statement parsing benchmarking script
+│   │   │   ├── generate_coverage.py  #     Generates bank template coverage report
+│   │   │   ├── generic_parser.py     #     Statistical parser for untemplated statements
+│   │   │   ├── job_progress.py       #     Progress tracker helper
+│   │   │   ├── log_filter.py         #     PII data logger masking script
+│   │   │   ├── metrics.py            #     Custom Prometheus metrics definitions
+│   │   │   ├── pii_masker.py         #     PII redaction utility
+│   │   │   └── run_security_scan.py  #     Automated project vulnerability scanner
+│   │   ├── db/                       #   Database configuration and schemas
+│   │   ├── exports/                  #   Exporters API endpoints
+│   │   ├── statements/              #   Statement uploading & processing
+│   │   │   ├── parser.py            #     Template parsing engine
+│   │   │   ├── ocr_worker.py        #     AWS Textract & Tesseract OCR pipelines
+│   │   │   ├── processing.py        #     Celery asynchronous task definitions
+│   │   │   ├── tus_router.py        #     TUS chunked resumable upload endpoints
+│   │   │   ├── rules_engine.py      #     Pattern matching engine
+│   │   │   └── websocket.py         #     WebSocket connection managers
+│   │   ├── main.py                   #   FastAPI entry application
+│   │   └── requirements.txt          #   Python backend dependencies
 │   │
-│   └── web/                          # Next.js 16 frontend
+│   └── web/                          # Next.js Frontend Application
 │       ├── src/
-│       │   ├── app/                  #   App Router pages
-│       │   │   ├── dashboard/        #     Main dashboard + review pages
-│       │   │   ├── login/            #     Auth pages
-│       │   │   ├── signup/
-│       │   │   ├── manage/           #     Admin panel
-│       │   │   └── guide/            #     Usage guide
-│       │   ├── components/           #   React components
-│       │   │   ├── TransactionTable.tsx
-│       │   │   ├── PDFViewer.tsx
-│       │   │   ├── ExportModal.tsx
-│       │   │   └── ui/              #     Shadcn UI primitives
-│       │   └── lib/                  #   Utilities & API clients
-│       ├── package.json
-│       └── next.config.ts
+│       │   ├── app/                  #   React App Router pages
+│       │   ├── components/           #   Shared React components
+│       │   │   ├── UppyUploader.tsx  #     TUS resumable uploader component
+│       │   │   └── PDFViewer.tsx     #     Interactive PDF viewer with box highlights
+│       │   └── lib/                  #   Utilities & API integrations
+│       │       └── auth.ts           #     Token helpers & automatic token renewal
+│       └── package.json              #   Frontend dependencies
 │
 ├── packages/
-│   └── bank-templates/               # 17 YAML bank configurations
-│       ├── hdfc.yaml
-│       ├── icici.yaml
-│       ├── sbi.yaml
-│       └── ...                       # + 14 more banks
+│   ├── bank-templates/               # 30 bank statement template configuration files (YAML)
+│   ├── schemas/                      # Shared JSON validation schemas
+│   └── tally-xml/                    # Tally import generation logic
 │
-├── workers/
-│   └── parser/
-│       └── experiments/              # Standalone PDF parsing experiments
-│           └── pdf_experiment.py
+├── workers/                          # Distributed workers
+│   └── parser/                       # Parsing experiments
 │
-├── infra/
-│   ├── docker-compose.yml            # Local infrastructure (6 services)
-│   ├── terraform/                    # AWS deployment (ECS, RDS, S3, CloudFront)
-│   ├── deploy.sh                     # Linux/macOS deploy script
-│   └── deploy.ps1                    # Windows deploy script
+├── infra/                            # Infrastructure and Deployment configurations
+│   ├── terraform/                    # AWS Infrastructure as Code (ECS, S3, RDS, IAM)
+│   │   └── ecs.tf                    #   ECS Cluster, service & task specifications
+│   ├── docker-compose.yml            # Local developer cluster (Postgres, Redis, ClamAV)
+│   ├── billing_shutdown_lambda.py    # Auto-scale cost protection Lambda function
+│   ├── db_backup.sh                  # Backup utility script
+│   ├── deploy.sh                     # Unix/macOS build & deployment orchestrator
+│   └── prometheus_alerts.yml         # Prometheus alerting alert configurations
 │
-├── docker/
-│   ├── prometheus.yml                # Prometheus scrape config
-│   └── grafana/
-│       └── dashboard.json            # Pre-built Grafana dashboard
+├── e2e/                              # E2E & load test suites
+│   └── load_test.js                  # Locust/k6 load test script
 │
-├── e2e/                              # Playwright E2E tests
-│   ├── review-flow.spec.ts
-│   └── fixtures/
-│
-├── docs/                             # Documentation & handoff notes
-│   ├── PHASE1_HANDOFF_README.md
-│   ├── WINDOWS_SETUP.md
-│   └── PROGRESS_REPORT.md
-│
-├── deploy_api.ps1                    # API-only deploy script
+├── deploy_api.ps1                    # API deployment automation script (PowerShell)
 └── README.md                         # ← You are here
 ```
 
@@ -977,28 +658,33 @@ Bank_statement_scanner/
 ## 🎯 Roadmap
 
 ### Completed ✅
-- [x] Multi-bank PDF / CSV / Excel parsing (17 banks)
-- [x] Three-tier OCR pipeline (Tesseract + Textract sync/async)
-- [x] AI-powered narration enrichment (Claude + heuristics)
-- [x] Full auth system (email OTP, phone OTP, JWT, Argon2id)
-- [x] Multi-tenant firm architecture with RBAC
-- [x] Real-time WebSocket progress updates
-- [x] Four export formats (CSV, Excel, JSON, Tally XML)
-- [x] Admin panel with template management & regression testing
-- [x] Prometheus + Grafana monitoring
-- [x] AWS Terraform deployment (ECS Fargate)
-- [x] Ledger memory with vector similarity (Qdrant)
-- [x] LLM cost tracking with content-hash deduplication
+- [x] Multi-bank PDF / CSV / Excel parsing (30 Indian banks)
+- [x] Resumable chunked file uploads (TUS 1.0.0 protocol implementation)
+- [x] Colocated ECS Fargate architecture (Shared fast `/app/uploads` volume)
+- [x] Background processing queues (Celery integration for parsing, enrichment, and exports)
+- [x] Three-tier OCR pipeline (Tesseract + Textract sync/async fallback)
+- [x] AI-powered narration enrichment (Claude 3.5 Haiku + heuristics)
+- [x] LLM cost tracking & content-hash caching
+- [x] Email OTP + phone OTP (Twilio) user authentication
+- [x] Real-time updates (WebSocket connection streams)
+- [x] Exports (CSV, Excel, JSON, and double-entry Tally XML)
+- [x] Ignored transactions filtering
+- [x] Zero Data Retention (ZDR) configuration for Anthropic API
+- [x] Hallucinated ledger warnings and recurring transaction cycles detection
+- [x] PII data masking in application logging
+- [x] ClamAV malware screening
+- [x] AWS KMS storage encryption integration
+- [x] Automated cost limits scale-down (CloudWatch + Lambda)
+- [x] Regression testing suite & QA evaluation metrics (Extraction & LLM)
+- [x] Prometheus metrics + Grafana monitoring dashboard
 
 ### Upcoming 🚧
-- [ ] Celery / arq background workers for large file processing
-- [ ] Bulk statement upload (zip archives)
-- [ ] Client-specific ledger chart import from Tally
-- [ ] Multi-language OCR support (Hindi, regional languages)
-- [ ] Statement reconciliation across multiple accounts
-- [ ] Webhook notifications for processing completion
-- [ ] API rate limiting and usage quotas
-- [ ] SSO / Google OAuth integration
+- [ ] Bulk statement upload (zip archives extraction)
+- [ ] Direct ledger accounts import from Tally API
+- [ ] Support for regional languages OCR (Hindi, Marathi, etc.)
+- [ ] Cross-account statement reconciliation
+- [ ] Webhook alerts for transaction review completion
+- [ ] OAuth integration (Google Workspace & Microsoft SSO)
 
 ---
 

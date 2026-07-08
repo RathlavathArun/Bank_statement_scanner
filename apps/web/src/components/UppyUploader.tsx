@@ -3,8 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import Uppy from "@uppy/core";
 import Tus from "@uppy/tus";
+import { ensureAccessToken, getAccessToken } from "@/lib/auth";
 
 const API = "/api";
+const MAX_UPLOAD_FILES = 20;
 
 interface UppyUploaderProps {
   bank: string | null;
@@ -17,10 +19,41 @@ interface UppyUploaderProps {
   setPassword: (v: string) => void;
 }
 
+function passwordErrorFrom(value: unknown): { code: string; message: string } | null {
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const detail = record.detail ?? value;
+    if (detail !== value) return passwordErrorFrom(detail);
+    const code = typeof record.error_code === "string" ? record.error_code : "";
+    const message = typeof record.message === "string" ? record.message : "";
+    if (code === "PASSWORD_REQUIRED" || code === "INVALID_PASSWORD") {
+      return { code, message };
+    }
+  }
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      const found = passwordErrorFrom(parsed);
+      if (found) return found;
+    } catch {
+      // Uppy may wrap the response JSON inside its own error message.
+    }
+    if (/password-protected|incorrect password|PASSWORD_REQUIRED|INVALID_PASSWORD/i.test(value)) {
+      return {
+        code: /incorrect|INVALID_PASSWORD/i.test(value) ? "INVALID_PASSWORD" : "PASSWORD_REQUIRED",
+        message: /incorrect|INVALID_PASSWORD/i.test(value)
+          ? "Incorrect password. Please provide the correct PDF password."
+          : "This PDF is password-protected. Please enter the document password.",
+      };
+    }
+  }
+
+  return null;
+}
+
 function authToken(): string | null {
-  return typeof window !== "undefined"
-    ? localStorage.getItem("access_token") || localStorage.getItem("token")
-    : null;
+  return getAccessToken();
 }
 
 export default function UppyUploader({
@@ -36,15 +69,21 @@ export default function UppyUploader({
   const uppyRef = useRef<Uppy | null>(null);
   const [uploadState, setUploadState] = useState<"idle" | "uploading" | "done" | "error">("idle");
   const [progress, setProgress] = useState(0);
-  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
+  const [selectedFileNames, setSelectedFileNames] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const syncSelectedFiles = (uppy: Uppy) => {
+    setSelectedFileNames(
+      uppy.getFiles().map((file) => file.name ?? "Unnamed file")
+    );
+  };
 
   // Lazy-init Uppy once and keep it stable
   useEffect(() => {
     const uppy = new Uppy({
       autoProceed: false,
       restrictions: {
-        maxNumberOfFiles: 1,
+        maxNumberOfFiles: MAX_UPLOAD_FILES,
         allowedFileTypes: [".pdf", ".csv", ".xlsx", ".xls", "image/*"],
       },
     });
@@ -52,15 +91,23 @@ export default function UppyUploader({
     uppy.use(Tus, {
       endpoint: `${API}/v1/statements/upload/tus`,
       removeFingerprintOnSuccess: true,
-      headers: authToken() ? { Authorization: `Bearer ${authToken()}` } : {},
+      // Set Authorization in exactly one place. Supplying it here as well as
+      // in onBeforeRequest makes tus-js-client append the two values, which
+      // produces a malformed JWT (roughly twice the expected token length).
       onBeforeRequest: (req) => {
         const token = authToken();
         if (token) req.setHeader("Authorization", `Bearer ${token}`);
       },
     });
 
-    uppy.on("file-added", (file) => {
-      setSelectedFileName(file.name ?? null);
+    uppy.on("file-added", () => {
+      syncSelectedFiles(uppy);
+      setUploadState("idle");
+      setProgress(0);
+    });
+
+    uppy.on("file-removed", () => {
+      syncSelectedFiles(uppy);
       setUploadState("idle");
       setProgress(0);
     });
@@ -70,34 +117,35 @@ export default function UppyUploader({
       setProgress(0);
     });
 
-    uppy.on("upload-progress", (_file, prog) => {
-      const pct = prog.bytesTotal
-        ? Math.round((prog.bytesUploaded / prog.bytesTotal) * 100)
-        : 0;
+    uppy.on("progress", (pct) => {
       setProgress(pct);
     });
 
     uppy.on("upload-success", (_file, response) => {
-      setUploadState("done");
-      setProgress(100);
-      
       const statementId = response.uploadURL
         ? response.uploadURL.split("/").pop()
         : null;
         
       // Try to get statementId from the custom header we added in backend
       let realStatementId = statementId;
-      const respAny = response as any;
-      if (respAny.getResponseHeader) {
-        const headerId = respAny.getResponseHeader("X-Statement-Id");
-        if (headerId) realStatementId = headerId;
-      }
+      const xhr = (response.body as { xhr?: XMLHttpRequest } | undefined)?.xhr;
+      const headerId = xhr?.getResponseHeader("X-Statement-Id");
+      if (headerId) realStatementId = headerId;
       
       if (realStatementId) {
         onUploadSuccess(realStatementId, "PARSING");
       } else {
         onUploadError("Upload succeeded but couldn't parse the statement ID.");
       }
+    });
+
+    uppy.on("complete", (result) => {
+      const failedUploads = result.failed ?? [];
+      setUploadState(failedUploads.length > 0 ? "error" : "done");
+      if (failedUploads.length === 0) {
+        setProgress(100);
+      }
+      syncSelectedFiles(uppy);
     });
 
     uppy.on("upload-error", (_file, error, response) => {
@@ -119,14 +167,14 @@ export default function UppyUploader({
         detail = respAny.body.detail || respAny.body;
       }
 
-      if (
-        detail &&
-        typeof detail === "object" &&
-        (detail.error_code === "PASSWORD_REQUIRED" ||
-          detail.error_code === "INVALID_PASSWORD")
-      ) {
+      const passwordError =
+        passwordErrorFrom(detail) ||
+        passwordErrorFrom((response as { body?: unknown } | undefined)?.body) ||
+        passwordErrorFrom(error.message);
+
+      if (passwordError) {
         setPasswordNeeded(true);
-        onUploadError(detail.message || "This PDF is password-protected. Please enter the password.");
+        onUploadError(passwordError.message);
         return;
       }
 
@@ -145,12 +193,25 @@ export default function UppyUploader({
   }, []);
 
   // Inject additional form fields (bank, password) before upload
-  const startUpload = () => {
+  const startUpload = async () => {
     const uppy = uppyRef.current;
     if (!uppy) return;
 
     const files = uppy.getFiles();
     if (files.length === 0) return;
+
+    try {
+      const token = await ensureAccessToken();
+      if (!token) {
+        setUploadState("error");
+        onUploadError("Your session has expired. Please sign in again.");
+        return;
+      }
+    } catch {
+      setUploadState("error");
+      onUploadError("Could not renew your session. Please try again.");
+      return;
+    }
 
     // Uppy XHR plugin reads `meta` fields and sends them as form-data fields
       files.forEach((f) => {
@@ -165,30 +226,41 @@ export default function UppyUploader({
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const uppy = uppyRef.current;
-    if (!uppy || !e.target.files?.[0]) return;
+    if (!uppy || !e.target.files?.length) return;
 
-    // Clear previous files
-    uppy.getFiles().forEach((f) => uppy.removeFile(f.id));
-
-    const file = e.target.files[0];
-    try {
-      uppy.addFile({
-        name: file.name,
-        type: file.type,
-        data: file,
-        source: "Local",
-      });
-    } catch (err: any) {
-      if (err?.isRestriction) {
-        onUploadError(err.message);
+    Array.from(e.target.files).forEach((file) => {
+      try {
+        uppy.addFile({
+          name: file.name,
+          type: file.type,
+          data: file,
+          source: "Local",
+        });
+      } catch (err: any) {
+        if (err?.isRestriction || err?.message) {
+          onUploadError(err.message);
+        }
       }
-    }
+    });
     // Reset file input so same file can be re-selected after error
     e.target.value = "";
   };
 
-  const hasFile = !!selectedFileName;
+  const clearSelectedFiles = () => {
+    const uppy = uppyRef.current;
+    if (!uppy || isUploading) return;
+    uppy.getFiles().forEach((file) => uppy.removeFile(file.id));
+    setSelectedFileNames([]);
+    setUploadState("idle");
+    setProgress(0);
+  };
+
+  const hasFile = selectedFileNames.length > 0;
   const isUploading = uploadState === "uploading";
+  const selectedSummary =
+    selectedFileNames.length === 1
+      ? selectedFileNames[0]
+      : `${selectedFileNames.length} files selected`;
 
   return (
     <div className="space-y-4">
@@ -204,6 +276,7 @@ export default function UppyUploader({
         <input
           ref={fileInputRef}
           type="file"
+          multiple
           accept=".pdf,.csv,.xlsx,.xls,image/*"
           className="sr-only"
           onChange={handleFileChange}
@@ -215,9 +288,16 @@ export default function UppyUploader({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
                 d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
             </svg>
-            <p className="text-sm font-medium text-blue-300">{selectedFileName}</p>
+            <p className="text-sm font-medium text-blue-300">{selectedSummary}</p>
+            {selectedFileNames.length > 1 && (
+              <ul className="mt-2 max-h-24 w-full max-w-xl overflow-y-auto text-left text-xs text-slate-500 dark:text-slate-400">
+                {selectedFileNames.map((name, index) => (
+                  <li key={`${name}-${index}`} className="truncate">• {name}</li>
+                ))}
+              </ul>
+            )}
             {!isUploading && (
-              <p className="text-xs text-slate-500 mt-1">Click to change file</p>
+              <p className="text-xs text-slate-500 mt-1">Click to add more files</p>
             )}
           </>
         ) : (
@@ -227,12 +307,24 @@ export default function UppyUploader({
                 d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
             </svg>
             <p className="text-sm font-semibold text-slate-300">
-              Click to select a bank statement
+              Click to select bank statements
             </p>
-            <p className="text-xs text-slate-500 mt-1">PDF, CSV, XLSX, XLS, or image</p>
+            <p className="text-xs text-slate-500 mt-1">Select up to {MAX_UPLOAD_FILES} files: PDF, CSV, XLSX, XLS, or image</p>
           </>
         )}
       </div>
+
+      {hasFile && !isUploading && (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            onClick={clearSelectedFiles}
+            className="text-xs font-medium text-slate-500 hover:text-red-500 transition-colors"
+          >
+            Clear selected files
+          </button>
+        </div>
+      )}
 
       {/* Bank selector pills */}
       <div className="flex flex-wrap justify-center gap-2">
@@ -265,7 +357,7 @@ export default function UppyUploader({
             placeholder="Enter PDF password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && hasFile) startUpload(); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && hasFile) void startUpload(); }}
             className="flex-1 px-3 py-1.5 rounded-md border border-amber-300 bg-white text-sm
                        text-slate-800 placeholder:text-slate-400
                        focus:outline-none focus:ring-2 focus:ring-amber-400
@@ -339,7 +431,9 @@ export default function UppyUploader({
           ? "Uploading…"
           : passwordNeeded
             ? "Unlock & Upload"
-            : "Upload Statement"}
+            : selectedFileNames.length > 1
+              ? `Upload ${selectedFileNames.length} Statements`
+              : "Upload Statement"}
       </button>
     </div>
   );

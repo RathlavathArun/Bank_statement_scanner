@@ -103,8 +103,8 @@ ok "Logged in to ECR"
 log "━━━ Step 4/6: Build & Push API Image ━━━"
 
 IMAGE_TAG="$(date +%Y%m%d-%H%M%S)"
-API_IMAGE="$ECR_API_URL:$IMAGE_TAG"
-API_IMAGE_LATEST="$ECR_API_URL:latest"
+API_IMAGE="${ECR_API_URL}:$IMAGE_TAG"
+API_IMAGE_LATEST="${ECR_API_URL}:latest"
 
 log "Building API image (tag: $IMAGE_TAG)..."
 docker build \
@@ -125,8 +125,8 @@ ok "API image pushed: $API_IMAGE"
 # ═════════════════════════════════════════════════════════════
 log "━━━ Step 5/6: Build & Push Web Image ━━━"
 
-WEB_IMAGE="$ECR_WEB_URL:$IMAGE_TAG"
-WEB_IMAGE_LATEST="$ECR_WEB_URL:latest"
+WEB_IMAGE="${ECR_WEB_URL}:$IMAGE_TAG"
+WEB_IMAGE_LATEST="${ECR_WEB_URL}:latest"
 
 # The web container reaches the API via Cloud Map service discovery
 API_INTERNAL_URL="http://${API_DISCOVERY_DNS}:8000"
@@ -167,8 +167,12 @@ API_TASK_DEF=$(aws ecs describe-task-definition \
 NEW_API_TASK_DEF=$(echo "$API_TASK_DEF" | python3 -c "
 import sys, json
 td = json.load(sys.stdin)
-td['containerDefinitions'][0]['image'] = '$API_IMAGE'
-env_vars = {e['name']: e for e in td['containerDefinitions'][0].get('environment', [])}
+containers = {c['name']: c for c in td['containerDefinitions']}
+for name in ('uploads-init', 'api', 'celery'):
+    if name in containers:
+        containers[name]['image'] = '$API_IMAGE'
+api = containers['api']
+env_vars = {e['name']: e for e in api.get('environment', [])}
 env_vars['CORS_ORIGINS'] = {
     'name': 'CORS_ORIGINS',
     'value': 'https://$CLOUDFRONT_DOMAIN,http://$ALB_DNS,https://$ALB_DNS,http://localhost:3000'
@@ -179,14 +183,23 @@ env_vars['CLAMAV_HOST'] = {'name': 'CLAMAV_HOST', 'value': 'clamav.bank-statemen
 env_vars['AWS_REGION'] = {'name': 'AWS_REGION', 'value': '$AWS_REGION'}
 env_vars['AWS_DEFAULT_REGION'] = {'name': 'AWS_DEFAULT_REGION', 'value': '$AWS_REGION'}
 env_vars['TEXTRACT_REGION'] = {'name': 'TEXTRACT_REGION', 'value': '$AWS_REGION'}
+env_vars['TEXTRACT_ASYNC_ENABLED'] = {'name': 'TEXTRACT_ASYNC_ENABLED', 'value': 'true'}
 if not env_vars.get('SMTP_FROM_EMAIL', {}).get('value'):
     smtp_username = env_vars.get('SMTP_USERNAME', {}).get('value', '')
     if smtp_username:
         env_vars['SMTP_FROM_EMAIL'] = {'name': 'SMTP_FROM_EMAIL', 'value': smtp_username}
-td['containerDefinitions'][0]['environment'] = list(env_vars.values())
+api['environment'] = list(env_vars.values())
+if 'celery' in containers:
+    celery_env = {e['name']: e for e in containers['celery'].get('environment', [])}
+    celery_env['AWS_DEFAULT_REGION'] = {'name': 'AWS_DEFAULT_REGION', 'value': '$AWS_REGION'}
+    celery_env['TEXTRACT_REGION'] = {'name': 'TEXTRACT_REGION', 'value': '$AWS_REGION'}
+    celery_env['TEXTRACT_ASYNC_ENABLED'] = {'name': 'TEXTRACT_ASYNC_ENABLED', 'value': 'true'}
+    if 'S3_BUCKET' in env_vars:
+        celery_env['S3_BUCKET'] = env_vars['S3_BUCKET']
+    containers['celery']['environment'] = list(celery_env.values())
 # Keep only the fields needed for register-task-definition
 keep = ['family','taskRoleArn','executionRoleArn','networkMode','containerDefinitions',
-        'requiresCompatibilities','cpu','memory','runtimePlatform']
+        'volumes','requiresCompatibilities','cpu','memory','runtimePlatform']
 result = {k: td[k] for k in keep if k in td}
 print(json.dumps(result))
 ")

@@ -29,7 +29,7 @@ COPY --chown=appuser:appgroup apps/api/ .
 # ── Copy bank templates (YAML configs used by parser) ────────
 COPY --chown=appuser:appgroup packages/bank-templates/ /app/bank-templates/
 
-RUN chown -R appuser:appgroup /app
+RUN mkdir -p /app/uploads && chown -R appuser:appgroup /app
 
 USER 10001:10001
 

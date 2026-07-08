@@ -35,12 +35,13 @@ def _decode_metadata(meta_str: str) -> dict:
 
 @tus_router.options("/{path:path}")
 async def tus_options(request: Request, response: Response):
-    response.headers["Tus-Resumable"] = "1.0.0"
-    response.headers["Tus-Version"] = "1.0.0"
-    response.headers["Tus-Extension"] = "creation,termination"
-    response.headers["Tus-Max-Size"] = "104857600"  # 100MB
-    response.headers["Access-Control-Expose-Headers"] = "Tus-Resumable, Tus-Version, Tus-Extension, Tus-Max-Size, Upload-Length, Upload-Offset, Location, Upload-Metadata, X-Statement-Id"
-    return Response(status_code=204)
+    return Response(status_code=204, headers={
+        "Tus-Resumable": "1.0.0",
+        "Tus-Version": "1.0.0",
+        "Tus-Extension": "creation,termination",
+        "Tus-Max-Size": "104857600",  # 100MB
+        "Access-Control-Expose-Headers": "Tus-Resumable, Tus-Version, Tus-Extension, Tus-Max-Size, Upload-Length, Upload-Offset, Location, Upload-Metadata, X-Statement-Id",
+    })
 
 @tus_router.post("")
 @tus_router.post("/")
@@ -95,11 +96,12 @@ async def tus_head(
     if info["user_id"] != str(current_user.id):
         raise HTTPException(status_code=403, detail="Not authorized")
         
-    response.headers["Tus-Resumable"] = "1.0.0"
-    response.headers["Upload-Offset"] = str(info["offset"])
-    response.headers["Upload-Length"] = str(info["length"])
-    response.headers["Cache-Control"] = "no-store"
-    return Response(status_code=200)
+    return Response(status_code=200, headers={
+        "Tus-Resumable": "1.0.0",
+        "Upload-Offset": str(info["offset"]),
+        "Upload-Length": str(info["length"]),
+        "Cache-Control": "no-store",
+    })
 
 @tus_router.patch("/{uid}")
 async def tus_patch(
@@ -137,14 +139,24 @@ async def tus_patch(
     info["offset"] = new_offset
     info_path.write_text(json.dumps(info))
     
-    response.headers["Tus-Resumable"] = "1.0.0"
-    response.headers["Upload-Offset"] = str(new_offset)
-    response.headers["Access-Control-Expose-Headers"] = "Upload-Offset, Tus-Resumable, X-Statement-Id"
+    response_headers = {
+        "Tus-Resumable": "1.0.0",
+        "Upload-Offset": str(new_offset),
+        "Access-Control-Expose-Headers": "Upload-Offset, Tus-Resumable, X-Statement-Id",
+    }
     
     # If complete, process it like /upload
     if new_offset == info["length"]:
-        statement_id = await _finalize_tus_upload(uid, info, bin_path, db, current_user)
-        response.headers["X-Statement-Id"] = statement_id
+        try:
+            statement_id = await _finalize_tus_upload(uid, info, bin_path, db, current_user)
+        except Exception:
+            # A completed TUS resource cannot be resumed after finalization
+            # fails (the temporary file may already have been moved). Remove
+            # its state so tus-js-client creates a fresh upload on retry.
+            info_path.unlink(missing_ok=True)
+            bin_path.unlink(missing_ok=True)
+            raise
+        response_headers["X-Statement-Id"] = statement_id
         
         # Cleanup tus files
         try:
@@ -152,7 +164,7 @@ async def tus_patch(
         except:
             pass
             
-    return Response(status_code=204)
+    return Response(status_code=204, headers=response_headers)
 
 @tus_router.delete("/{uid}")
 async def tus_delete(
@@ -173,8 +185,7 @@ async def tus_delete(
     if bin_path.exists():
         bin_path.unlink()
         
-    response.headers["Tus-Resumable"] = "1.0.0"
-    return Response(status_code=204)
+    return Response(status_code=204, headers={"Tus-Resumable": "1.0.0"})
 
 async def _finalize_tus_upload(uid: str, info: dict, bin_path: Path, db: AsyncSession, current_user: User) -> str:
     """Run ClamAV, create DB record, check PDF password, and spawn celery task (same as standard upload)"""
@@ -275,7 +286,7 @@ async def _finalize_tus_upload(uid: str, info: dict, bin_path: Path, db: AsyncSe
             stage="queued",
             progress=0,
             statement_id=statement.id,
-            firm_id=client.firm_id
+            extra={"firm_id": client.firm_id},
         )
         
     return statement.id

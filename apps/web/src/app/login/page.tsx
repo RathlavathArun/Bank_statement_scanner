@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { readApiResponse } from "@/lib/utils";
 import { LoginSchema, type LoginFormValues } from "@/lib/schemas";
+import { storeTokens } from "@/lib/auth";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -39,7 +40,7 @@ export default function LoginPage() {
       const data = await readApiResponse(res);
 
       if (res.ok && data.success) {
-        localStorage.setItem("access_token", data.data.tokens.access_token);
+        storeTokens(data.data.tokens);
         if (data.data.user?.email_verified === false) {
           router.push(`/verify-email?email=${encodeURIComponent(values.email)}`);
         } else if (data.data.user?.mfa_required) {
