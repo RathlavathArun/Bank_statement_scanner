@@ -42,6 +42,7 @@ async def tus_options(request: Request, response: Response):
     response.headers["Access-Control-Expose-Headers"] = "Tus-Resumable, Tus-Version, Tus-Extension, Tus-Max-Size, Upload-Length, Upload-Offset, Location, Upload-Metadata, X-Statement-Id"
     return Response(status_code=204)
 
+@tus_router.post("")
 @tus_router.post("/")
 async def tus_create(
     request: Request,
