@@ -62,9 +62,11 @@ ok "Infrastructure provisioned successfully"
 log "━━━ Step 2/6: Capturing Outputs ━━━"
 
 AWS_REGION="ap-south-1"
-ALB_DNS=$(aws elbv2 describe-load-balancers --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "unknown")
+ALB_DNS=$(aws elbv2 describe-load-balancers \
+    --names bank-statement-alb \
+    --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || echo "unknown")
 CLOUDFRONT_DOMAIN=$(aws cloudfront list-distributions \
-    --query 'DistributionList.Items[0].DomainName' \
+    --query "DistributionList.Items[?Origins.Items[0].DomainName=='$ALB_DNS'].DomainName | [0]" \
     --output text 2>/dev/null || echo "")
 ECR_WEB_URL="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/bank-statement-web"
 ECR_API_URL="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/bank-statement-api"
