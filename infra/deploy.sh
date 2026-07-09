@@ -94,7 +94,9 @@ S3_BUCKET="existing"
 API_DISCOVERY_DNS="api.bank-statement.local"
 QDRANT_CLOUD_URL="${QDRANT_URL:-}"
 QDRANT_CLOUD_API_KEY="${QDRANT_API_KEY:-}"
-export QDRANT_CLOUD_URL QDRANT_CLOUD_API_KEY
+ANTHROPIC_KEY="${ANTHROPIC_API_KEY:-}"
+OPENAI_KEY="${OPENAI_API_KEY:-}"
+export QDRANT_CLOUD_URL QDRANT_CLOUD_API_KEY ANTHROPIC_KEY OPENAI_KEY
 
 ok "CloudFront:       ${CLOUDFRONT_DOMAIN:-not found}"
 ok "ALB DNS:          $ALB_DNS"
@@ -192,6 +194,8 @@ td = json.load(sys.stdin)
 containers = {c['name']: c for c in td['containerDefinitions']}
 qdrant_url = os.environ.get('QDRANT_CLOUD_URL', '').strip()
 qdrant_api_key = os.environ.get('QDRANT_CLOUD_API_KEY', '').strip()
+anthropic_api_key = os.environ.get('ANTHROPIC_KEY', '').strip()
+openai_api_key = os.environ.get('OPENAI_KEY', '').strip()
 for name in ('uploads-init', 'api', 'celery'):
     if name in containers:
         containers[name]['image'] = '$API_IMAGE'
@@ -212,6 +216,10 @@ env_vars['QDRANT_ENABLED'] = {'name': 'QDRANT_ENABLED', 'value': 'true' if qdran
 env_vars['QDRANT_URL'] = {'name': 'QDRANT_URL', 'value': qdrant_url}
 env_vars['QDRANT_API_KEY'] = {'name': 'QDRANT_API_KEY', 'value': qdrant_api_key}
 env_vars['OPENAI_FALLBACK_MODEL'] = {'name': 'OPENAI_FALLBACK_MODEL', 'value': 'gpt-4o-mini'}
+if anthropic_api_key:
+    env_vars['ANTHROPIC_API_KEY'] = {'name': 'ANTHROPIC_API_KEY', 'value': anthropic_api_key}
+if openai_api_key:
+    env_vars['OPENAI_API_KEY'] = {'name': 'OPENAI_API_KEY', 'value': openai_api_key}
 if not env_vars.get('SMTP_FROM_EMAIL', {}).get('value'):
     smtp_username = env_vars.get('SMTP_USERNAME', {}).get('value', '')
     if smtp_username:
@@ -226,6 +234,10 @@ if 'celery' in containers:
     celery_env['QDRANT_URL'] = {'name': 'QDRANT_URL', 'value': qdrant_url}
     celery_env['QDRANT_API_KEY'] = {'name': 'QDRANT_API_KEY', 'value': qdrant_api_key}
     celery_env['OPENAI_FALLBACK_MODEL'] = {'name': 'OPENAI_FALLBACK_MODEL', 'value': 'gpt-4o-mini'}
+    if anthropic_api_key:
+        celery_env['ANTHROPIC_API_KEY'] = {'name': 'ANTHROPIC_API_KEY', 'value': anthropic_api_key}
+    if openai_api_key:
+        celery_env['OPENAI_API_KEY'] = {'name': 'OPENAI_API_KEY', 'value': openai_api_key}
     if 'S3_BUCKET' in env_vars:
         celery_env['S3_BUCKET'] = env_vars['S3_BUCKET']
     containers['celery']['environment'] = list(celery_env.values())

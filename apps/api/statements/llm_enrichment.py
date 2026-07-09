@@ -424,10 +424,19 @@ async def claude_enrich_batch(
         # Task 17: reject any ledger name the model hallucinated outside the
         # allowed set. Raise LedgerValidationError instead of silently nulling it.
         raw_ledger = item.get("suggested_ledger")
-        if allowed_set and raw_ledger and raw_ledger not in allowed_set:
-            raise LedgerValidationError(
-                f"Validation failed: suggested ledger '{raw_ledger}' is not in the client allowed ledgers list."
-            )
+        if allowed_set and raw_ledger:
+            matched_ledger = None
+            for allowed in allowed_set:
+                if allowed.lower() == raw_ledger.lower():
+                    matched_ledger = allowed
+                    break
+            
+            if matched_ledger:
+                raw_ledger = matched_ledger
+            else:
+                raise LedgerValidationError(
+                    f"Validation failed: suggested ledger '{raw_ledger}' is not in the client allowed ledgers list."
+                )
 
         results.append(
             EnrichmentResult(
@@ -527,10 +536,19 @@ async def gpt4o_enrich_batch(
 
         # Task 17 guard: reject ledger names outside the allowed set.
         raw_ledger = item.get("suggested_ledger")
-        if allowed_set and raw_ledger and raw_ledger not in allowed_set:
-            raise LedgerValidationError(
-                f"Validation failed: suggested ledger '{raw_ledger}' is not in the client allowed ledgers list."
-            )
+        if allowed_set and raw_ledger:
+            matched_ledger = None
+            for allowed in allowed_set:
+                if allowed.lower() == raw_ledger.lower():
+                    matched_ledger = allowed
+                    break
+            
+            if matched_ledger:
+                raw_ledger = matched_ledger
+            else:
+                raise LedgerValidationError(
+                    f"Validation failed: suggested ledger '{raw_ledger}' is not in the client allowed ledgers list."
+                )
 
         results.append(
             EnrichmentResult(
@@ -769,12 +787,20 @@ async def enrich_transactions_with_tracking(
     # constrained to only suggest names from their chart of accounts.
     allowed_ledgers: list[str] | None = None
     if client_id:
+        from db.models import LedgerMapping
         ledger_rows = await db.execute(
             select(Ledger.name).where(Ledger.client_id == client_id).order_by(Ledger.name)
         )
         names = [row[0] for row in ledger_rows.all()]
-        if names:
-            allowed_ledgers = names
+        
+        mapping_rows = await db.execute(
+            select(LedgerMapping.ledger_name).where(LedgerMapping.client_id == client_id).distinct()
+        )
+        mapping_names = [row[0] for row in mapping_rows.all() if row[0]]
+        
+        combined_names = sorted(list(set(names + mapping_names)))
+        if combined_names:
+            allowed_ledgers = combined_names
 
     with tracer.start_as_current_span("llm_enrichment") as span:
         span.set_attribute("statement_id", statement_id)

@@ -400,8 +400,8 @@ export function TransactionTable({
       },
       {
         field: "confidence",
-        headerName: "Conf.",
-        width: 80,
+        headerName: "AI Conf.",
+        width: 85,
         cellRenderer: (params: any) => {
           const tx = params.data;
           if (!tx) return null;
@@ -425,13 +425,13 @@ export function TransactionTable({
       },
       {
         field: "ocr_confidence",
-        headerName: "OCR",
-        width: 80,
+        headerName: "OCR Conf.",
+        width: 95,
         cellRenderer: (params: any) => {
           const tx = params.data;
           if (!tx) return null;
           const val = Number(tx.ocr_confidence || 0);
-          if (!val) return <span className="block text-center text-xs text-gray-500">—</span>;
+          if (!val) return <span className={`block text-center text-xs ${darkMode ? "text-slate-400" : "text-gray-500"}`}>—</span>;
 
           let badgeClass = darkMode
             ? "bg-red-500/20 text-red-200 border-red-400/50"
@@ -656,7 +656,7 @@ export function TransactionTable({
 
       {/* AG Grid container */}
       <div
-        className={`${darkMode ? "ag-theme-quartz-dark border-white/10" : "ag-theme-quartz border-slate-200"} rounded-lg border overflow-hidden`}
+        className={`${darkMode ? "ag-theme-midnight border-white/10" : "ag-theme-quartz border-slate-200"} rounded-lg border overflow-hidden`}
         style={{ height: "65vh", minHeight: "400px", ...gridThemeStyle }}
       >
         <AgGridReact

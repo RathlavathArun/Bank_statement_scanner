@@ -191,3 +191,36 @@
 .ag-theme-quartz-dark .ag-header {
   border-bottom: 1px solid var(--ag-border-color);
 }
+.ag-theme-midnight {
+  --ag-background-color: #030b1a !important;
+  --ag-foreground-color: #f8fafc !important;
+  --ag-data-color: #f8fafc !important;
+  --ag-header-background-color: #081527 !important;
+  --ag-header-foreground-color: #f8fafc !important;
+  --ag-row-hover-color: rgba(59, 130, 246, 0.14) !important;
+  --ag-selected-row-background-color: rgba(59, 130, 246, 0.18) !important;
+  --ag-odd-row-background-color: #06111f !important;
+  --ag-border-color: rgba(148, 163, 184, 0.22) !important;
+  --ag-row-border-color: rgba(148, 163, 184, 0.22) !important;
+  --ag-header-column-separator-color: rgba(148, 163, 184, 0.2) !important;
+}
+
+.ag-theme-midnight .ag-root-wrapper,
+.ag-theme-midnight .ag-root-wrapper-body,
+.ag-theme-midnight .ag-header,
+.ag-theme-midnight .ag-body-viewport,
+.ag-theme-midnight .ag-row {
+  background-color: var(--ag-background-color) !important;
+  color: var(--ag-data-color) !important;
+  border-color: var(--ag-border-color) !important;
+}
+
+.ag-theme-midnight .ag-header-cell, 
+.ag-theme-midnight .ag-header-group-cell {
+    background-color: var(--ag-header-background-color) !important;
+    color: var(--ag-header-foreground-color) !important;
+}
+
+.ag-theme-midnight .ag-cell {
+  background-color: transparent !important; 
+}
