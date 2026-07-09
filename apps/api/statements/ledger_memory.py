@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -14,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
 from db.models import LedgerMapping, Transaction
+
+logger = logging.getLogger(__name__)
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -65,24 +69,48 @@ class QdrantLedgerMemory:
     def enabled(self) -> bool:
         return settings.QDRANT_ENABLED
 
+    @property
+    def headers(self) -> dict[str, str]:
+        if not settings.QDRANT_API_KEY:
+            return {}
+        return {"api-key": settings.QDRANT_API_KEY}
+
     async def ensure_collection(self) -> None:
         if not self.enabled:
             return
 
         async with httpx.AsyncClient(timeout=2.0) as client:
-            response = await client.get(f"{self.url}/collections/{self.collection}")
-            if response.status_code == 200:
-                return
-            response.raise_for_status() if response.status_code != 404 else None
-            await client.put(
+            response = await client.get(
                 f"{self.url}/collections/{self.collection}",
-                json={
-                    "vectors": {
-                        "size": self.vector_size,
-                        "distance": "Cosine",
-                    }
-                },
+                headers=self.headers,
             )
+            if response.status_code != 200:
+                response.raise_for_status() if response.status_code != 404 else None
+                await client.put(
+                    f"{self.url}/collections/{self.collection}",
+                    headers=self.headers,
+                    json={
+                        "vectors": {
+                            "size": self.vector_size,
+                            "distance": "Cosine",
+                        }
+                    },
+                )
+
+            await self.ensure_payload_indexes(client)
+
+    async def ensure_payload_indexes(self, client: httpx.AsyncClient) -> None:
+        """Create payload indexes required by Qdrant Cloud strict mode."""
+        response = await client.put(
+            f"{self.url}/collections/{self.collection}/index",
+            headers=self.headers,
+            json={
+                "field_name": "client_id",
+                "field_schema": "keyword",
+            },
+        )
+        if response.status_code not in {200, 201, 409}:
+            response.raise_for_status()
 
     async def upsert(self, mapping: LedgerMapping) -> None:
         if not self.enabled:
@@ -96,9 +124,11 @@ class QdrantLedgerMemory:
             "hit_count": mapping.hit_count,
             "mapping_id": mapping.id,
         }
+        t0 = time.monotonic()
         async with httpx.AsyncClient(timeout=2.0) as client:
             await client.put(
                 f"{self.url}/collections/{self.collection}/points",
+                headers=self.headers,
                 json={
                     "points": [
                         {
@@ -109,17 +139,24 @@ class QdrantLedgerMemory:
                     ]
                 },
             )
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "qdrant_upsert: client=%s pattern='%s' ledger='%s' latency_ms=%d",
+            mapping.client_id, mapping.pattern, mapping.ledger_name, latency_ms,
+        )
 
     async def search(self, client_id: str, narration: str, limit: int) -> list[LedgerSuggestion]:
         if not self.enabled:
             return []
 
         await self.ensure_collection()
+        t0 = time.monotonic()
         async with httpx.AsyncClient(timeout=2.0) as client:
             response = await client.post(
-                f"{self.url}/collections/{self.collection}/points/search",
+                f"{self.url}/collections/{self.collection}/points/query",
+                headers=self.headers,
                 json={
-                    "vector": embedding_for_text(narration, self.vector_size),
+                    "query": embedding_for_text(narration, self.vector_size),
                     "limit": limit,
                     "with_payload": True,
                     "filter": {
@@ -131,7 +168,13 @@ class QdrantLedgerMemory:
             )
             response.raise_for_status()
 
-        matches = response.json().get("result", [])
+        result = response.json().get("result", {})
+        matches = result.get("points", result if isinstance(result, list) else [])
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        logger.info(
+            "qdrant_search: client=%s query='%s' results=%d latency_ms=%d",
+            client_id, narration[:60], len(matches), latency_ms,
+        )
         return [
             LedgerSuggestion(
                 ledger_name=match.get("payload", {}).get("ledger_name", ""),
@@ -143,6 +186,82 @@ class QdrantLedgerMemory:
             for match in matches
             if match.get("payload", {}).get("ledger_name")
         ]
+
+    async def batch_search_for_few_shot(
+        self, client_id: str, narrations: list[str], limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Query Qdrant for similar past mappings across multiple narrations.
+
+        Returns deduplicated [{"narration": ..., "ledger": ..., "score": ...}]
+        suitable for injection as few-shot examples in LLM prompts (PRD §10.7).
+        """
+        if not self.enabled or not narrations:
+            return []
+
+        await self.ensure_collection()
+
+        # Build batch search requests — one per unique narration
+        unique_narrations = list(dict.fromkeys(narrations))[:20]  # cap at 20
+        searches = [
+            {
+                "query": embedding_for_text(n, self.vector_size),
+                "limit": 3,
+                "with_payload": True,
+                "filter": {
+                    "must": [
+                        {"key": "client_id", "match": {"value": client_id}},
+                    ],
+                },
+            }
+            for n in unique_narrations
+        ]
+
+        t0 = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(
+                    f"{self.url}/collections/{self.collection}/points/query/batch",
+                    headers=self.headers,
+                    json={"searches": searches},
+                )
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "qdrant_batch_search failed: %s response=%s",
+                exc,
+                exc.response.text[:500],
+            )
+            return []
+        except (httpx.HTTPError, OSError) as exc:
+            logger.warning("qdrant_batch_search failed: %s", exc)
+            return []
+
+        latency_ms = int((time.monotonic() - t0) * 1000)
+
+        # Flatten and deduplicate by ledger name
+        seen_ledgers: set[str] = set()
+        examples: list[dict[str, Any]] = []
+        for batch_result in response.json().get("result", []):
+            matches = batch_result.get("points", batch_result if isinstance(batch_result, list) else [])
+            for match in matches:
+                payload = match.get("payload", {})
+                ledger = payload.get("ledger_name", "")
+                pattern = payload.get("pattern", "")
+                score = float(match.get("score", 0))
+                if not ledger or ledger in seen_ledgers or score < 0.3:
+                    continue
+                seen_ledgers.add(ledger)
+                examples.append({"narration": pattern, "ledger": ledger, "score": round(score, 4)})
+                if len(examples) >= limit:
+                    break
+            if len(examples) >= limit:
+                break
+
+        logger.info(
+            "qdrant_batch_search: client=%s narrations=%d examples=%d latency_ms=%d",
+            client_id, len(unique_narrations), len(examples), latency_ms,
+        )
+        return examples
 
 
 qdrant_memory = QdrantLedgerMemory()

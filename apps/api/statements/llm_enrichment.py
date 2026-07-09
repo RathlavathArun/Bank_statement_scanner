@@ -240,10 +240,36 @@ def _chunk(lst: list, size: int) -> list[list]:
     return [lst[i : i + size] for i in range(0, len(lst), size)]
 
 
+def _few_shot_context(few_shot_examples: list[dict[str, Any]] | None) -> str:
+    """Format confirmed client mappings for prompt context."""
+    if not few_shot_examples:
+        return ""
+
+    examples = [
+        {
+            "narration": mask_for_llm(str(example.get("narration") or "")[:160]),
+            "ledger": str(example.get("ledger") or "")[:120],
+        }
+        for example in few_shot_examples[:5]
+        if example.get("narration") and example.get("ledger")
+    ]
+    if not examples:
+        return ""
+
+    examples_str = json.dumps(examples, ensure_ascii=True)
+    validate_no_pii(examples_str)
+    return (
+        "Here are previously confirmed narration-to-ledger mappings from this client. "
+        "Use them as context when suggesting ledgers for similar transactions:\n"
+        f"{examples_str}\n\n"
+    )
+
+
 async def claude_enrich_batch(
     transactions: list[Transaction],
     model: str | None = None,
     allowed_ledgers: list[str] | None = None,
+    few_shot_examples: list[dict[str, Any]] | None = None,
 ) -> list[EnrichmentResult]:
     """Call the Anthropic API to enrich a batch of transactions.
 
@@ -321,6 +347,7 @@ async def claude_enrich_batch(
         },
     }
     prompt = (
+        _few_shot_context(few_shot_examples) +
         "Parse these Indian bank transaction narrations. Clean noisy narration, "
         "detect payment mode, counterparty, a practical accounting ledger, and confidence. "
         "Use null when unsure."
@@ -420,8 +447,9 @@ async def claude_enrich_batch(
 async def gpt4o_enrich_batch(
     transactions: list[Transaction],
     allowed_ledgers: list[str] | None = None,
+    few_shot_examples: list[dict[str, Any]] | None = None,
 ) -> list[EnrichmentResult]:
-    """Task 18 — GPT-4o fallback when both Anthropic models are unavailable.
+    """Task 18 — GPT-4o-mini fallback when both Anthropic models are unavailable.
 
     Uses OpenAI chat completions with JSON mode so the output is parseable
     in the same schema as the Claude tool-use response.
@@ -449,6 +477,7 @@ async def gpt4o_enrich_batch(
     validate_no_pii(payload_str)
 
     user_content = (
+        _few_shot_context(few_shot_examples) +
         "Return a JSON array named 'items' with one object per transaction.\n\n"
         f"Transactions:\n{payload_str}"
     )
@@ -521,13 +550,14 @@ async def gpt4o_enrich_batch(
 async def enrich_transactions(
     transactions: list[Transaction],
     allowed_ledgers: list[str] | None = None,
+    few_shot_examples: list[dict[str, Any]] | None = None,
 ) -> list[EnrichmentResult]:
     """Enrich transactions using the 4-tier fallback chain (Tasks 15 + 18).
 
     Fallback order:
       1. Claude Sonnet 4.5   (primary — highest accuracy)
       2. Claude 3.5 Haiku    (fallback — Anthropic rate-limit / model error)
-      3. GPT-4o              (fallback — full Anthropic API outage, Task 18)
+      3. GPT-4o-mini         (fallback — full Anthropic API outage, Task 18)
       4. Rule-based heuristic (local — always available, no API call)
 
     Task 17:
@@ -542,7 +572,9 @@ async def enrich_transactions(
     # ── Step 1: Claude Sonnet 4.5 (primary) ───────────────────────────
     try:
         llm_results = await claude_enrich_batch(
-            transactions, allowed_ledgers=allowed_ledgers
+            transactions,
+            allowed_ledgers=allowed_ledgers,
+            few_shot_examples=few_shot_examples,
         )
     except (httpx.HTTPError, ValueError, KeyError):
         pass
@@ -555,16 +587,19 @@ async def enrich_transactions(
                     transactions,
                     model=settings.ANTHROPIC_FALLBACK_MODEL,
                     allowed_ledgers=allowed_ledgers,
+                    few_shot_examples=few_shot_examples,
                 )
             except (httpx.HTTPError, ValueError, KeyError):
                 pass
 
     if not llm_results:
-        # ── Step 3: GPT-4o (Task 18 — cross-provider) ───────────────────
+        # ── Step 3: GPT-4o-mini (Task 18 — cross-provider) ──────────────
         if settings.OPENAI_API_KEY:
             try:
                 llm_results = await gpt4o_enrich_batch(
-                    transactions, allowed_ledgers=allowed_ledgers
+                    transactions,
+                    allowed_ledgers=allowed_ledgers,
+                    few_shot_examples=few_shot_examples,
                 )
             except (httpx.HTTPError, ValueError, KeyError, json.JSONDecodeError):
                 pass
@@ -787,6 +822,21 @@ async def enrich_transactions_with_tracking(
             else:
                 cache_misses.append(transaction)
 
+        few_shot_examples: list[dict[str, Any]] = []
+        if client_id and cache_misses:
+            try:
+                from statements.ledger_memory import qdrant_memory
+
+                narrations = [tx.narration_clean or tx.narration or "" for tx in cache_misses]
+                few_shot_examples = await qdrant_memory.batch_search_for_few_shot(
+                    client_id,
+                    narrations,
+                )
+            except Exception as exc:  # noqa: BLE001 - Qdrant context is optional
+                logger.warning("qdrant_few_shot_lookup failed: %s", exc)
+                few_shot_examples = []
+        span.set_attribute("few_shot_examples", len(few_shot_examples))
+
         # ── Task 16: batch + concurrency-limited enrichment ───────────────────
         # Split cache-misses into chunks of LLM_BATCH_SIZE (50) and run at most
         # LLM_MAX_CONCURRENT_BATCHES (4) chunks in parallel.
@@ -797,7 +847,11 @@ async def enrich_transactions_with_tracking(
 
         async def _enrich_batch(batch: list[Transaction]) -> list[EnrichmentResult]:
             async with semaphore:
-                return await enrich_transactions(batch, allowed_ledgers=allowed_ledgers)
+                return await enrich_transactions(
+                    batch,
+                    allowed_ledgers=allowed_ledgers,
+                    few_shot_examples=few_shot_examples,
+                )
 
         batch_results_nested = await asyncio.gather(
             *[_enrich_batch(batch) for batch in batches]

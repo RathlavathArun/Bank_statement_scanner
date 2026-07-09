@@ -17,6 +17,7 @@ type PDFViewerProps = {
   targetPage?: number | null;
   /** When set, a highlight overlay is drawn at these normalized (0–1) coordinates on targetPage. */
   highlightBbox?: BboxCoords | null;
+  darkMode?: boolean;
 };
 
 type DocumentProps = {
@@ -49,7 +50,7 @@ type ReactPdfModule = {
   };
 };
 
-export function PDFViewer({ fileUrl, targetPage, highlightBbox }: PDFViewerProps) {
+export function PDFViewer({ fileUrl, targetPage, highlightBbox, darkMode = false }: PDFViewerProps) {
   const [reactPdf, setReactPdf] = useState<ReactPdfModule | null>(null);
   const [numPages, setNumPages] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
@@ -60,7 +61,6 @@ export function PDFViewer({ fileUrl, targetPage, highlightBbox }: PDFViewerProps
   const pageContainerRef = useRef<HTMLDivElement | null>(null);
   // Flash state for the highlight — fades after a moment
   const [highlightFlash, setHighlightFlash] = useState(false);
-
   // Password-prompt state
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [pdfPassword, setPdfPassword] = useState("");
@@ -202,15 +202,29 @@ export function PDFViewer({ fileUrl, targetPage, highlightBbox }: PDFViewerProps
   return (
     <div
       data-testid="pdf-viewer"
-      className="flex h-full min-h-[420px] flex-col overflow-hidden rounded-lg border border-white/10 bg-black/30 text-white backdrop-blur-xl"
+      className={`flex h-full min-h-[420px] flex-col overflow-hidden rounded-lg border backdrop-blur-xl transition-colors duration-300 ${
+        !darkMode
+          ? "border-slate-200 bg-white text-slate-900 shadow-sm"
+          : "border-white/10 bg-[#06111f] text-white shadow-[0_0_0_1px_rgba(255,255,255,0.03)]"
+      }`}
     >
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-black/40 p-4">
+      <div
+        className={`flex flex-wrap items-center justify-between gap-3 border-b p-4 transition-colors duration-300 ${
+          !darkMode
+            ? "border-slate-200 bg-slate-50"
+            : "border-white/10 bg-[#081527]"
+        }`}
+      >
         <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
             disabled={currentPage <= 1}
-            className="rounded-lg bg-white/10 px-3 py-1 text-sm transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-30"
+            className={`rounded-lg px-3 py-1 text-sm transition disabled:cursor-not-allowed disabled:opacity-30 ${
+              !darkMode
+                ? "bg-slate-200 hover:bg-slate-300 text-slate-700"
+                : "bg-white/10 hover:bg-white/20"
+            }`}
           >
             Prev
           </button>
@@ -221,27 +235,33 @@ export function PDFViewer({ fileUrl, targetPage, highlightBbox }: PDFViewerProps
             type="button"
             onClick={() => setCurrentPage((page) => Math.min(numPages || 1, page + 1))}
             disabled={currentPage >= numPages}
-            className="rounded-lg bg-white/10 px-3 py-1 text-sm transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-30"
+            className={`rounded-lg px-3 py-1 text-sm transition disabled:cursor-not-allowed disabled:opacity-30 ${
+              !darkMode
+                ? "bg-slate-200 hover:bg-slate-300 text-slate-700"
+                : "bg-white/10 hover:bg-white/20"
+            }`}
           >
             Next
           </button>
         </div>
 
-        <label className="flex items-center gap-3 text-sm">
-          <input
-            type="range"
-            min="0.5"
-            max="2"
-            step="0.1"
-            value={zoom}
-            onChange={(event) => setZoom(Number(event.target.value))}
-            className="w-28"
-          />
-          <span className="min-w-12 text-right">{Math.round(zoom * 100)}%</span>
-        </label>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-3 text-sm">
+            <input
+              type="range"
+              min="0.5"
+              max="2"
+              step="0.1"
+              value={zoom}
+              onChange={(event) => setZoom(Number(event.target.value))}
+              className="w-28"
+            />
+            <span className="min-w-12 text-right">{Math.round(zoom * 100)}%</span>
+          </label>
+        </div>
       </div>
 
-      <div className="flex-1 overflow-auto p-4">
+      <div className={`flex-1 overflow-auto p-4 transition-colors duration-300 ${!darkMode ? "bg-slate-100" : "bg-[#030b1a]"}`}>
         {viewerError || !Document || !Page ? (
           viewerError ? fallback : loading
         ) : (
@@ -257,7 +277,7 @@ export function PDFViewer({ fileUrl, targetPage, highlightBbox }: PDFViewerProps
               setCurrentPage(1);
             }}
           >
-            <div ref={pageContainerRef} className="relative flex justify-center">
+            <div ref={pageContainerRef} className={`relative flex justify-center ${darkMode ? "pdf-dark-mode" : ""}`}>
               <Page
                 pageNumber={currentPage}
                 scale={zoom}

@@ -162,6 +162,11 @@
   }
 }
 
+/* PDF dark-mode: invert the rendered canvas so white pages become dark */
+.pdf-dark-mode .react-pdf__Page {
+  filter: invert(0.88) hue-rotate(180deg);
+}
+
 @keyframes bboxPulse {
   0%   { opacity: 1; }
   60%  { opacity: 1; }

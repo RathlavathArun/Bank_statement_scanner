@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # Vector memory / Qdrant
     QDRANT_ENABLED: bool = False
     QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_API_KEY: str | None = None
     QDRANT_COLLECTION: str = "ledger_mappings"
     QDRANT_VECTOR_SIZE: int = 64
 
@@ -38,12 +39,12 @@ class Settings(BaseSettings):
     ANTHROPIC_INPUT_USD_PER_1M: float = 3.00   # Sonnet 4.5 pricing
     ANTHROPIC_OUTPUT_USD_PER_1M: float = 15.00  # Sonnet 4.5 pricing
 
-    # Task 18 — GPT-4o as 3rd-tier fallback when both Anthropic models fail.
+    # Task 18 — GPT-4o-mini as 3rd-tier fallback when both Anthropic models fail.
     # PRD risk §14: Anthropic outage must not halt all categorisation.
     OPENAI_API_KEY: str | None = None
-    OPENAI_FALLBACK_MODEL: str = "gpt-4o"
-    OPENAI_INPUT_USD_PER_1M: float = 2.50   # GPT-4o pricing (input)
-    OPENAI_OUTPUT_USD_PER_1M: float = 10.00  # GPT-4o pricing (output)
+    OPENAI_FALLBACK_MODEL: str = "gpt-4o-mini"
+    OPENAI_INPUT_USD_PER_1M: float = 0.15    # GPT-4o-mini pricing (input)
+    OPENAI_OUTPUT_USD_PER_1M: float = 0.60   # GPT-4o-mini pricing (output)
     # Zero Data Retention — set to True only AFTER signing the Anthropic ZDR
     # agreement at https://console.anthropic.com/settings/privacy
     # When enabled, the `anthropic-beta: zero-data-retention-2024-02-23` header

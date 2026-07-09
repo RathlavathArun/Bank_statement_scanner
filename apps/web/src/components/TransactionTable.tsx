@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useCallback, useRef } from "react";
+import { CSSProperties, useMemo, useState, useCallback } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { AgGridReact } from "ag-grid-react";
 import { ColDef, RowClassParams, RowClickedEvent, SelectionChangedEvent } from "ag-grid-community";
@@ -38,6 +38,7 @@ interface TransactionTableProps {
   onPageSizeChange: (size: number) => void;
   onBulkUpdate?: (txIds: string[], changes: Partial<Transaction>) => void;
   onRowClick?: (txId: string, pageNumber: number | null, bbox: BboxCoords | null) => void;
+  darkMode?: boolean;
 }
 
 type FilterType = "ALL" | "DEBIT" | "CREDIT";
@@ -70,6 +71,7 @@ export function TransactionTable({
   onPageSizeChange,
   onBulkUpdate,
   onRowClick,
+  darkMode = true,
 }: TransactionTableProps) {
   const [editingCell, setEditingCell] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -151,6 +153,22 @@ export function TransactionTable({
   const totalDebit = filtered.filter((tx) => !tx.is_ignored).reduce((sum, tx) => sum + amountValue(tx.debit), 0);
   const totalCredit = filtered.filter((tx) => !tx.is_ignored).reduce((sum, tx) => sum + amountValue(tx.credit), 0);
   const unledgered = filtered.filter((tx) => !tx.confirmed_ledger).length;
+  const gridThemeStyle = useMemo<CSSProperties>(() => {
+    if (!darkMode) return {};
+    return {
+      "--ag-background-color": "#06111f",
+      "--ag-foreground-color": "#dbeafe",
+      "--ag-data-color": "#dbeafe",
+      "--ag-header-background-color": "#081527",
+      "--ag-header-foreground-color": "#f8fafc",
+      "--ag-row-hover-color": "rgba(59, 130, 246, 0.14)",
+      "--ag-selected-row-background-color": "rgba(59, 130, 246, 0.18)",
+      "--ag-odd-row-background-color": "#06111f",
+      "--ag-border-color": "rgba(148, 163, 184, 0.22)",
+      "--ag-row-border-color": "rgba(148, 163, 184, 0.22)",
+      "--ag-header-column-separator-color": "rgba(148, 163, 184, 0.2)",
+    } as CSSProperties;
+  }, [darkMode]);
 
   const columns: ColDef<Transaction>[] = useMemo(
     () => [
@@ -171,7 +189,7 @@ export function TransactionTable({
           const tx = params.data;
           if (!tx) return null;
           return (
-            <div className={`flex flex-col justify-center h-full gap-0.5 ${tx.is_ignored ? "line-through text-gray-500" : "text-gray-300"}`}>
+            <div className={`flex flex-col justify-center h-full gap-0.5 ${tx.is_ignored ? "line-through text-gray-500" : darkMode ? "text-gray-300" : "text-slate-700"}`}>
               {formatDate(tx.txn_date)}
               {tx.page_number && (
                 <span
@@ -207,7 +225,11 @@ export function TransactionTable({
         cellRenderer: (params: any) => {
           const tx = params.data;
           if (!tx) return null;
-          const isIgnoredClass = tx.is_ignored ? "line-through text-gray-500" : "text-gray-300 hover:text-white";
+          const isIgnoredClass = tx.is_ignored
+            ? "line-through text-gray-500"
+            : darkMode
+              ? "text-gray-300 hover:text-white"
+              : "text-slate-700 hover:text-slate-950";
           return (
             <div
               className={`flex flex-col justify-center h-full cursor-pointer ${isIgnoredClass}`}
@@ -225,7 +247,11 @@ export function TransactionTable({
                   onBlur={() => saveEdit(tx.id, "narration")}
                   onKeyDown={(event) => handleKeyDown(event, tx.id, "narration")}
                   onClick={(e) => e.stopPropagation()}
-                  className="w-full rounded border border-white/20 bg-black/50 px-2 py-1 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  className={`w-full rounded border px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${
+                    darkMode
+                      ? "border-white/20 bg-black/50 text-white"
+                      : "border-slate-300 bg-white text-slate-950"
+                  }`}
                 />
               ) : (
                 <div className="flex flex-col justify-center leading-tight">
@@ -268,7 +294,7 @@ export function TransactionTable({
           const tx = params.data;
           if (!tx) return null;
           return (
-            <span className={`block w-full text-right ${tx.is_ignored ? "line-through text-gray-500" : "text-gray-300"}`}>
+            <span className={`block w-full text-right ${tx.is_ignored ? "line-through text-gray-500" : darkMode ? "text-gray-300" : "text-slate-700"}`}>
               ₹{amountValue(tx.balance).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
             </span>
           );
@@ -281,7 +307,7 @@ export function TransactionTable({
         cellRenderer: (params: any) => {
           const tx = params.data;
           if (!tx) return null;
-          return <span className={`text-xs ${tx.is_ignored ? "line-through text-gray-600" : "text-gray-400"}`}>{tx.payment_mode || "-"}</span>;
+          return <span className={`text-xs ${tx.is_ignored ? "line-through text-gray-600" : darkMode ? "text-gray-400" : "text-slate-500"}`}>{tx.payment_mode || "-"}</span>;
         },
       },
       {
@@ -292,8 +318,13 @@ export function TransactionTable({
           const tx = params.data;
           if (!tx) return null;
           const isEditing = editingCell === `${tx.id}:confirmed_ledger`;
+          const ledgerTextClass = tx.is_ignored
+            ? "line-through text-gray-500"
+            : darkMode
+              ? "text-gray-300 hover:text-white"
+              : "text-slate-700 hover:text-slate-950";
           return (
-            <div className={`relative flex flex-col justify-center h-full cursor-pointer ${tx.is_ignored ? "line-through text-gray-500" : "text-gray-300 hover:text-white"}`}>
+            <div className={`relative flex flex-col justify-center h-full cursor-pointer ${ledgerTextClass}`}>
               {isEditing ? (
                 <div onClick={(e) => e.stopPropagation()}>
                   <input
@@ -306,15 +337,25 @@ export function TransactionTable({
                        saveEdit(tx.id, "confirmed_ledger");
                     }}
                     onKeyDown={(event) => handleKeyDown(event, tx.id, "confirmed_ledger")}
-                    className="w-full rounded border border-white/20 bg-black/50 px-2 py-1 text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    className={`w-full rounded border px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${
+                      darkMode
+                        ? "border-white/20 bg-black/50 text-white"
+                        : "border-slate-300 bg-white text-slate-950"
+                    }`}
                   />
                   {ledgerSuggestions.length > 0 && (
-                    <ul className="ledger-suggestion-dropdown absolute z-50 mt-1 w-56 rounded-lg border border-white/10 bg-slate-900 shadow-xl text-xs">
+                    <ul className={`ledger-suggestion-dropdown absolute z-50 mt-1 w-56 rounded-lg border shadow-xl text-xs ${
+                      darkMode
+                        ? "border-white/10 bg-slate-900"
+                        : "border-slate-200 bg-white"
+                    }`}>
                       {ledgerSuggestions.slice(0, 5).map((s) => (
                         <li
                           key={s.ledger_name}
                           tabIndex={0}
-                          className="flex items-center justify-between px-3 py-1.5 hover:bg-white/10 cursor-pointer"
+                          className={`flex items-center justify-between px-3 py-1.5 cursor-pointer ${
+                            darkMode ? "hover:bg-white/10" : "hover:bg-slate-100"
+                          }`}
                           onMouseDown={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
@@ -324,7 +365,7 @@ export function TransactionTable({
                             setLedgerSuggestions([]);
                           }}
                         >
-                          <span className="text-white">{s.ledger_name}</span>
+                          <span className={darkMode ? "text-white" : "text-slate-900"}>{s.ledger_name}</span>
                           <span className="text-gray-500">{Math.round(s.score * 100)}%</span>
                         </li>
                       ))}
@@ -392,13 +433,19 @@ export function TransactionTable({
           const val = Number(tx.ocr_confidence || 0);
           if (!val) return <span className="block text-center text-xs text-gray-500">—</span>;
 
-          let badgeClass = "bg-red-500/20 text-red-300 border-red-500/30";
+          let badgeClass = darkMode
+            ? "bg-red-500/20 text-red-200 border-red-400/50"
+            : "bg-red-100 text-red-800 border-red-300";
           let icon = "⚠️";
           if (val >= 0.85) {
-            badgeClass = "bg-emerald-500/20 text-emerald-300 border-emerald-500/30";
+            badgeClass = darkMode
+              ? "bg-cyan-400/20 text-cyan-100 border-cyan-300/60"
+              : "bg-cyan-100 text-cyan-900 border-cyan-300";
             icon = "✓";
           } else if (val >= 0.7) {
-            badgeClass = "bg-amber-500/20 text-amber-300 border-amber-500/30";
+            badgeClass = darkMode
+              ? "bg-amber-400/20 text-amber-100 border-amber-300/60"
+              : "bg-amber-100 text-amber-900 border-amber-300";
             icon = "~";
           }
           
@@ -444,7 +491,7 @@ export function TransactionTable({
         },
       },
     ],
-    [editValue, editingCell, onUpdate, sortBy, sortDir, ledgerSuggestions]
+    [darkMode, editValue, editingCell, onUpdate, sortBy, sortDir, ledgerSuggestions]
   );
 
   const getRowClass = useCallback((params: RowClassParams<Transaction>) => {
@@ -453,7 +500,7 @@ export function TransactionTable({
     const conf = Number(tx.confidence || 1);
     const ocrConf = Number(tx.ocr_confidence || 0);
     
-    let classes = ["!border-b", "!border-white/10", "transition-colors"];
+    const classes = ["!border-b", darkMode ? "!border-white/10" : "!border-slate-200", "transition-colors"];
     
     if (tx.is_ignored) {
       classes.push("!opacity-40", "!grayscale", "!bg-transparent", "!border-l-4", "!border-l-gray-600/50");
@@ -477,7 +524,7 @@ export function TransactionTable({
     }
     
     return classes.join(" ");
-  }, [activeRowId, onRowClick]);
+  }, [activeRowId, darkMode, onRowClick]);
 
   const handleRowClick = useCallback((e: RowClickedEvent<Transaction>) => {
     const tx = e.data;
@@ -503,7 +550,7 @@ export function TransactionTable({
     return (
       <div className="space-y-3">
         {Array.from({ length: 8 }).map((_, index) => (
-          <div key={index} className="h-10 animate-pulse rounded bg-white/5" />
+          <div key={index} className={`h-10 animate-pulse rounded ${darkMode ? "bg-white/5" : "bg-slate-200"}`} />
         ))}
       </div>
     );
@@ -511,13 +558,21 @@ export function TransactionTable({
 
   return (
     <div className="space-y-4">
-      <div className="space-y-3 rounded-lg border border-white/10 bg-black/20 p-4">
+      <div className={`space-y-3 rounded-lg border p-4 ${
+        darkMode
+          ? "border-white/10 bg-[#06111f]"
+          : "border-slate-200 bg-white shadow-sm"
+      }`}>
         <input
           type="text"
           placeholder="Search narration..."
           value={searchText}
           onChange={(event) => setSearchText(event.target.value)}
-          className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-white placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+          className={`w-full rounded-lg border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${
+            darkMode
+              ? "border-white/10 bg-white/5 text-white placeholder:text-gray-400"
+              : "border-slate-300 bg-white text-slate-950 placeholder:text-slate-400"
+          }`}
         />
 
         <div className="flex gap-2">
@@ -528,7 +583,9 @@ export function TransactionTable({
               className={`rounded-lg px-3 py-1 text-sm font-medium transition-all ${
                 filterType === type
                   ? "bg-blue-600 text-white"
-                  : "bg-white/5 text-gray-300 hover:bg-white/10"
+                  : darkMode
+                    ? "bg-white/5 text-gray-300 hover:bg-white/10"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
               }`}
             >
               {type}
@@ -541,17 +598,25 @@ export function TransactionTable({
             type="date"
             value={dateFrom}
             onChange={(event) => setDateFrom(event.target.value)}
-            className="flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+            className={`flex-1 rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${
+              darkMode
+                ? "border-white/10 bg-white/5 text-white"
+                : "border-slate-300 bg-white text-slate-950"
+            }`}
           />
           <input
             type="date"
             value={dateTo}
             onChange={(event) => setDateTo(event.target.value)}
-            className="flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+            className={`flex-1 rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${
+              darkMode
+                ? "border-white/10 bg-white/5 text-white"
+                : "border-slate-300 bg-white text-slate-950"
+            }`}
           />
         </div>
 
-        <div className="flex justify-between text-sm text-gray-300">
+        <div className={`flex justify-between text-sm ${darkMode ? "text-gray-300" : "text-slate-600"}`}>
           <span>Debit: ₹{totalDebit.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
           <span>Credit: ₹{totalCredit.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
           <span className="text-yellow-400">Unledgered: {unledgered}</span>
@@ -559,8 +624,10 @@ export function TransactionTable({
       </div>
 
       {rowSelection.length > 0 && onBulkUpdate && (
-        <div className="flex items-center gap-3 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3">
-          <span className="text-sm font-medium text-blue-200">
+        <div className={`flex items-center gap-3 rounded-lg border border-blue-500/30 p-3 ${
+          darkMode ? "bg-blue-500/10" : "bg-blue-50"
+        }`}>
+          <span className={`text-sm font-medium ${darkMode ? "text-blue-200" : "text-blue-700"}`}>
             {rowSelection.length} selected
           </span>
           <input
@@ -568,7 +635,11 @@ export function TransactionTable({
             placeholder="New Ledger Name"
             value={bulkLedger}
             onChange={(e) => setBulkLedger(e.target.value)}
-            className="rounded border border-white/20 bg-white/10 px-2 py-1 text-sm text-white focus:outline-none"
+            className={`rounded border px-2 py-1 text-sm focus:outline-none ${
+              darkMode
+                ? "border-white/20 bg-white/10 text-white"
+                : "border-slate-300 bg-white text-slate-950"
+            }`}
           />
           <button
             onClick={() => {
@@ -584,7 +655,10 @@ export function TransactionTable({
       )}
 
       {/* AG Grid container */}
-      <div className="ag-theme-quartz-dark rounded-lg border border-white/10 overflow-hidden" style={{ height: "65vh", minHeight: "400px" }}>
+      <div
+        className={`${darkMode ? "ag-theme-quartz-dark border-white/10" : "ag-theme-quartz border-slate-200"} rounded-lg border overflow-hidden`}
+        style={{ height: "65vh", minHeight: "400px", ...gridThemeStyle }}
+      >
         <AgGridReact
           rowData={filtered}
           columnDefs={columns}
@@ -602,13 +676,21 @@ export function TransactionTable({
 
       {/* Keep pagination controls if they still want them for server-side fetches, though AG Grid handles all filtered data */}
       {pagination && (
-        <div className="flex items-center justify-between rounded-lg border border-white/10 bg-black/20 p-4">
+        <div className={`flex items-center justify-between rounded-lg border p-4 ${
+          darkMode
+            ? "border-white/10 bg-[#06111f]"
+            : "border-slate-200 bg-white shadow-sm"
+        }`}>
           <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-400">Rows per page:</span>
+            <span className={`text-sm ${darkMode ? "text-gray-400" : "text-slate-500"}`}>Rows per page:</span>
             <select
               value={pageSize}
               onChange={(event) => onPageSizeChange(parseInt(event.target.value))}
-              className="rounded border border-white/10 bg-white/10 px-2 py-1 text-sm text-white focus:outline-none"
+              className={`rounded border px-2 py-1 text-sm focus:outline-none ${
+                darkMode
+                  ? "border-white/10 bg-white/10 text-white"
+                  : "border-slate-300 bg-white text-slate-950"
+              }`}
             >
               {[25, 50, 100, 250, 500, 1000].map((size) => (
                 <option key={size} value={size}>
@@ -618,7 +700,7 @@ export function TransactionTable({
             </select>
           </div>
 
-          <span className="text-sm text-gray-400">
+          <span className={`text-sm ${darkMode ? "text-gray-400" : "text-slate-500"}`}>
             Page {page} of {pagination.pages}
           </span>
 
@@ -626,14 +708,22 @@ export function TransactionTable({
             <button
               onClick={() => onPageChange(page - 1)}
               disabled={page === 1}
-              className="rounded-lg bg-white/10 px-3 py-1 text-sm text-white transition-all hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-30"
+              className={`rounded-lg px-3 py-1 text-sm transition-all disabled:cursor-not-allowed disabled:opacity-30 ${
+                darkMode
+                  ? "bg-white/10 text-white hover:bg-white/20"
+                  : "bg-slate-200 text-slate-700 hover:bg-slate-300"
+              }`}
             >
               Prev
             </button>
             <button
               onClick={() => onPageChange(page + 1)}
               disabled={page === pagination.pages}
-              className="rounded-lg bg-white/10 px-3 py-1 text-sm text-white transition-all hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-30"
+              className={`rounded-lg px-3 py-1 text-sm transition-all disabled:cursor-not-allowed disabled:opacity-30 ${
+                darkMode
+                  ? "bg-white/10 text-white hover:bg-white/20"
+                  : "bg-slate-200 text-slate-700 hover:bg-slate-300"
+              }`}
             >
               Next
             </button>

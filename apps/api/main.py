@@ -49,7 +49,18 @@ async def lifespan(app: FastAPI):
         print("[OK] Template manager initialized with hot-reload support")
     except Exception as e:
         print(f"[WARN] Could not initialize template manager: {e}")
-    
+
+    # Initialize Qdrant collection (if enabled)
+    try:
+        from statements.ledger_memory import qdrant_memory
+        if qdrant_memory.enabled:
+            await qdrant_memory.ensure_collection()
+            print("[OK] Qdrant collection initialized")
+        else:
+            print("[SKIP] Qdrant disabled — ledger memory uses PostgreSQL only")
+    except Exception as e:
+        print(f"[WARN] Qdrant init failed (non-fatal): {e}")
+
     yield
     
     # Shutdown template manager
@@ -99,7 +110,23 @@ app.include_router(totp_router)  # Task 8: TOTP MFA endpoints
 # ─── Health Check ────────────────────────────────────────────
 @app.get("/health", tags=["System"])
 async def health_check():
-    return ApiResponse.ok(data={"status": "healthy", "version": "0.1.0"})
+    import httpx
+
+    qdrant_status = "disabled"
+    if settings.QDRANT_ENABLED:
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                headers = {"api-key": settings.QDRANT_API_KEY} if settings.QDRANT_API_KEY else {}
+                r = await client.get(f"{settings.QDRANT_URL}/collections", headers=headers)
+                qdrant_status = "ok" if r.status_code == 200 else "error"
+        except Exception:
+            qdrant_status = "unreachable"
+
+    return ApiResponse.ok(data={
+        "status": "healthy",
+        "version": "0.1.0",
+        "qdrant": qdrant_status,
+    })
 
 
 @app.get("/", tags=["System"])

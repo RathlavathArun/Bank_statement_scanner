@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Moon, Sun } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import ExportModal, { type ExportJob } from "@/components/ExportModal";
 import { PDFViewer, type BboxCoords } from "@/components/PDFViewer";
@@ -98,6 +98,7 @@ export default function ReviewPage() {
   const [pageSize, setPageSize] = useState(50);
   const [pagination, setPagination] = useState<{ total: number; pages: number } | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [midnightMode, setMidnightMode] = useState(true);
   
   // Zustand store for UI states
   const {
@@ -402,14 +403,23 @@ export default function ReviewPage() {
 
   const isPdf = statement?.file_type?.toLowerCase() === "pdf";
   const filePreview = isPdf ? (
-    <PDFViewer fileUrl={fileUrl} targetPage={selectedPage} highlightBbox={selectedBbox} />
+    <PDFViewer
+      fileUrl={fileUrl}
+      targetPage={selectedPage}
+      highlightBbox={selectedBbox}
+      darkMode={midnightMode}
+    />
   ) : (
     <div
       data-testid="pdf-viewer"
-      className="flex h-full min-h-[420px] flex-col items-center justify-center rounded-lg border border-white/10 bg-black/30 p-6 text-center text-white backdrop-blur-xl"
+      className={`flex h-full min-h-[420px] flex-col items-center justify-center rounded-lg border p-6 text-center backdrop-blur-xl ${
+        midnightMode
+          ? "border-white/10 bg-[#06111f] text-white"
+          : "border-slate-200 bg-white text-slate-900 shadow-sm"
+      }`}
     >
       <p className="text-lg font-semibold">PDF preview is available for PDF files</p>
-      <p className="mt-2 max-w-md text-sm text-slate-300">
+      <p className={`mt-2 max-w-md text-sm ${midnightMode ? "text-slate-300" : "text-slate-600"}`}>
         This statement is a {statement?.file_type?.toUpperCase() || "non-PDF"} file. Review extracted transactions on the right or download the original file.
       </p>
       <a
@@ -423,7 +433,7 @@ export default function ReviewPage() {
   );
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white">
+    <div className={`min-h-screen transition-colors duration-300 ${midnightMode ? "bg-[#030b1a] text-white" : "bg-slate-50 text-slate-950"}`}>
       {/* OCR in-progress overlay */}
       {statement?.status === "OCR" && (
         <OcrStatusScreen
@@ -449,14 +459,22 @@ export default function ReviewPage() {
         ))}
       </div>
 
-      <header className="sticky top-0 z-40 border-b border-white/10 bg-slate-950/90 backdrop-blur">
+      <header className={`sticky top-0 z-40 border-b backdrop-blur ${
+        midnightMode
+          ? "border-white/10 bg-[#030b1a]/95"
+          : "border-slate-200 bg-white/90"
+      }`}>
         <div className="flex min-h-16 flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="flex min-w-0 items-center gap-3">
-            <Link href="/dashboard" className="flex items-center gap-2 text-sm text-slate-300 hover:text-white">
+            <Link href="/dashboard" className={`flex items-center gap-2 text-sm ${
+              midnightMode ? "text-slate-300 hover:text-white" : "text-slate-600 hover:text-slate-950"
+            }`}>
               <ArrowLeft size={16} /> Dashboard
             </Link>
             <span className="truncate font-semibold">{statement?.filename ?? "Statement"}</span>
-            <span className="rounded-full bg-white/10 px-2 py-1 text-xs uppercase text-slate-200">
+            <span className={`rounded-full px-2 py-1 text-xs uppercase ${
+              midnightMode ? "bg-white/10 text-slate-200" : "bg-slate-200 text-slate-700"
+            }`}>
               {statement?.bank ?? "Unknown"}
             </span>
             <span className={`rounded-full px-2 py-1 text-xs ${statusClass(statement?.status ?? "")}`}>
@@ -465,6 +483,19 @@ export default function ReviewPage() {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setMidnightMode((value) => !value)}
+              title={midnightMode ? "Switch page to light mode" : "Switch page to midnight black"}
+              className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition ${
+                midnightMode
+                  ? "bg-white/10 text-slate-100 hover:bg-white/15"
+                  : "bg-slate-200 text-slate-800 hover:bg-slate-300"
+              }`}
+            >
+              {midnightMode ? <Sun size={16} /> : <Moon size={16} />}
+              {midnightMode ? "Light" : "Midnight"}
+            </button>
             <button className="rounded-lg bg-white/10 px-3 py-2 text-sm disabled:opacity-40" disabled={!canUndo} onClick={handleUndo}>
               Undo
             </button>
@@ -509,15 +540,15 @@ export default function ReviewPage() {
             {statement.error}
           </div>
         )}
-        <div className="grid grid-cols-2 border-b border-white/10 sm:hidden">
+        <div className={`grid grid-cols-2 border-b sm:hidden ${midnightMode ? "border-white/10" : "border-slate-200"}`}>
           <button
-            className={`py-3 text-sm ${activeTab === "transactions" ? "bg-white/10" : ""}`}
+            className={`py-3 text-sm ${activeTab === "transactions" ? (midnightMode ? "bg-white/10" : "bg-slate-200") : ""}`}
             onClick={() => setActiveTab("transactions")}
           >
             Transactions
           </button>
           <button
-            className={`py-3 text-sm ${activeTab === "pdf" ? "bg-white/10" : ""}`}
+            className={`py-3 text-sm ${activeTab === "pdf" ? (midnightMode ? "bg-white/10" : "bg-slate-200") : ""}`}
             onClick={() => setActiveTab("pdf")}
           >
             PDF Preview
@@ -525,7 +556,7 @@ export default function ReviewPage() {
         </div>
 
         <div className="hidden h-full grid-cols-[40%_60%] sm:grid">
-          <section className="h-full overflow-hidden border-r border-white/10 p-4">
+          <section className={`h-full overflow-hidden border-r p-4 ${midnightMode ? "border-white/10" : "border-slate-200"}`}>
             {filePreview}
           </section>
           <section className="h-full overflow-auto p-4">
@@ -544,6 +575,7 @@ export default function ReviewPage() {
               }}
               onBulkUpdate={bulkUpdateTransactions}
               onRowClick={handleRowClick}
+              darkMode={midnightMode}
             />
           </section>
         </div>
@@ -567,6 +599,7 @@ export default function ReviewPage() {
               }}
               onBulkUpdate={bulkUpdateTransactions}
               onRowClick={handleRowClick}
+              darkMode={midnightMode}
             />
           )}
         </div>
@@ -585,7 +618,5 @@ export default function ReviewPage() {
     </div>
   );
 }
-
-
 
 

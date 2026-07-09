@@ -251,6 +251,27 @@ resource "aws_service_discovery_service" "clamav" {
   }
 }
 
+/*
+# Self-hosted Qdrant is kept here for later. Production currently injects
+# Qdrant Cloud settings through deploy.sh so secrets do not enter Terraform state.
+resource "aws_service_discovery_service" "qdrant" {
+  name = "qdrant"
+
+  dns_config {
+    namespace_id = aws_service_discovery_private_dns_namespace.main.id
+    dns_records {
+      ttl  = 10
+      type = "A"
+    }
+    routing_policy = "MULTIVALUE"
+  }
+
+  health_check_custom_config {
+    failure_threshold = 1
+  }
+}
+*/
+
 # --- API Task Definition ---
 # Higher resources than web (512 CPU / 1024 MB) for OCR, PDF parsing, and LLM calls.
 
@@ -411,6 +432,18 @@ resource "aws_ecs_task_definition" "api" {
           name  = "CLAMAV_HOST"
           value = "clamav.${var.project_name}.local"
         },
+        {
+          name  = "QDRANT_ENABLED"
+          value = "false"
+        },
+        {
+          name  = "QDRANT_URL"
+          value = ""
+        },
+        {
+          name  = "QDRANT_API_KEY"
+          value = ""
+        },
       ]
       logConfiguration = {
         logDriver = "awslogs"
@@ -442,7 +475,7 @@ resource "aws_ecs_task_definition" "api" {
       environment = [
         {
           name  = "DATABASE_URL"
-          value = "postgresql+asyncpg://${var.db_username}:${var.db_password}@${aws_db_instance.postgres.address}:5432/${var.db_name}"
+          value = "postgresql+asyncpg://bse_admin:${var.db_password}@${aws_db_instance.postgres.endpoint}/bank_statements"
         },
         {
           name  = "REDIS_URL"
@@ -455,6 +488,18 @@ resource "aws_ecs_task_definition" "api" {
         {
           name  = "CLAMAV_HOST"
           value = "clamav.${var.project_name}.local"
+        },
+        {
+          name  = "QDRANT_ENABLED"
+          value = "false"
+        },
+        {
+          name  = "QDRANT_URL"
+          value = ""
+        },
+        {
+          name  = "QDRANT_API_KEY"
+          value = ""
         },
         {
           name  = "OCR_ENGINE"
@@ -571,3 +616,63 @@ resource "aws_ecs_service" "clamav" {
 
   }
 }
+
+/*
+# --- Qdrant Task Definition ---
+# Self-hosted Qdrant is disabled for now while production uses Qdrant Cloud.
+resource "aws_ecs_task_definition" "qdrant" {
+  family                   = "${var.project_name}-qdrant"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "512"
+  memory                   = "1024"
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_task_role.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "ARM64"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name      = "qdrant"
+      image     = "qdrant/qdrant:latest"
+      essential = true
+      portMappings = [
+        {
+          containerPort = 6333
+          hostPort      = 6333
+        }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = aws_cloudwatch_log_group.ecs.name
+          "awslogs-region"        = var.aws_region
+          "awslogs-stream-prefix" = "qdrant"
+        }
+      }
+    }
+  ])
+}
+
+# Qdrant Service
+resource "aws_ecs_service" "qdrant" {
+  name            = "${var.project_name}-qdrant-service"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.qdrant.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.private[*].id
+    security_groups  = [aws_security_group.ecs_tasks.id]
+    assign_public_ip = false
+  }
+
+  service_registries {
+    registry_arn = aws_service_discovery_service.qdrant.arn
+  }
+}
+*/

@@ -44,6 +44,12 @@ services:
       - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ─── MinIO (S3-compatible storage) ────────────────────────
   minio:
@@ -129,6 +135,8 @@ services:
       S3_BUCKET: bank-statements
       CLAMAV_HOST: clamav
       CLAMAV_PORT: 3310
+      QDRANT_ENABLED: "true"
+      QDRANT_URL: http://qdrant:6333
       DEBUG: "false"
     depends_on:
       postgres:
@@ -136,6 +144,8 @@ services:
       redis:
         condition: service_healthy
       clamav:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
 
   # Automated daily database backup service (Task 25)

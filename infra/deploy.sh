@@ -17,6 +17,24 @@ ok()    { echo -e "${GREEN}[  OK  ]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[ WARN ]${NC} $*"; }
 err()   { echo -e "${RED}[ERROR ]${NC} $*" >&2; }
 
+docker_push_with_retry() {
+    local image="$1"
+    local attempts="${2:-3}"
+    local delay=10
+
+    for attempt in $(seq 1 "$attempts"); do
+        if docker push "$image"; then
+            return 0
+        fi
+        if [ "$attempt" -eq "$attempts" ]; then
+            return 1
+        fi
+        warn "Docker push failed for $image (attempt $attempt/$attempts). Retrying in ${delay}s..."
+        sleep "$delay"
+        delay=$((delay * 2))
+    done
+}
+
 # ── Paths ────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -74,6 +92,9 @@ RDS_ENDPOINT="existing"
 REDIS_ENDPOINT="existing"
 S3_BUCKET="existing"
 API_DISCOVERY_DNS="api.bank-statement.local"
+QDRANT_CLOUD_URL="${QDRANT_URL:-}"
+QDRANT_CLOUD_API_KEY="${QDRANT_API_KEY:-}"
+export QDRANT_CLOUD_URL QDRANT_CLOUD_API_KEY
 
 ok "CloudFront:       ${CLOUDFRONT_DOMAIN:-not found}"
 ok "ALB DNS:          $ALB_DNS"
@@ -83,6 +104,7 @@ ok "RDS Endpoint:     $RDS_ENDPOINT"
 ok "Redis Endpoint:   $REDIS_ENDPOINT"
 ok "S3 Bucket:        $S3_BUCKET"
 ok "API Discovery:    $API_DISCOVERY_DNS"
+ok "Qdrant Cloud:     ${QDRANT_CLOUD_URL:-disabled}"
 ok "AWS Region:       $AWS_REGION"
 
 cd "$REPO_ROOT"
@@ -115,8 +137,8 @@ docker build \
     .
 
 log "Pushing API image to ECR..."
-docker push "$API_IMAGE"
-docker push "$API_IMAGE_LATEST"
+docker_push_with_retry "$API_IMAGE"
+docker_push_with_retry "$API_IMAGE_LATEST"
 
 ok "API image pushed: $API_IMAGE"
 
@@ -141,8 +163,8 @@ docker build \
     apps/web/
 
 log "Pushing Web image to ECR..."
-docker push "$WEB_IMAGE"
-docker push "$WEB_IMAGE_LATEST"
+docker_push_with_retry "$WEB_IMAGE"
+docker_push_with_retry "$WEB_IMAGE_LATEST"
 
 ok "Web image pushed: $WEB_IMAGE"
 
@@ -165,9 +187,11 @@ API_TASK_DEF=$(aws ecs describe-task-definition \
 
 # Replace the placeholder/old image with the new one and update runtime config
 NEW_API_TASK_DEF=$(echo "$API_TASK_DEF" | python3 -c "
-import sys, json
+import os, sys, json
 td = json.load(sys.stdin)
 containers = {c['name']: c for c in td['containerDefinitions']}
+qdrant_url = os.environ.get('QDRANT_CLOUD_URL', '').strip()
+qdrant_api_key = os.environ.get('QDRANT_CLOUD_API_KEY', '').strip()
 for name in ('uploads-init', 'api', 'celery'):
     if name in containers:
         containers[name]['image'] = '$API_IMAGE'
@@ -184,6 +208,10 @@ env_vars['AWS_REGION'] = {'name': 'AWS_REGION', 'value': '$AWS_REGION'}
 env_vars['AWS_DEFAULT_REGION'] = {'name': 'AWS_DEFAULT_REGION', 'value': '$AWS_REGION'}
 env_vars['TEXTRACT_REGION'] = {'name': 'TEXTRACT_REGION', 'value': '$AWS_REGION'}
 env_vars['TEXTRACT_ASYNC_ENABLED'] = {'name': 'TEXTRACT_ASYNC_ENABLED', 'value': 'true'}
+env_vars['QDRANT_ENABLED'] = {'name': 'QDRANT_ENABLED', 'value': 'true' if qdrant_url else 'false'}
+env_vars['QDRANT_URL'] = {'name': 'QDRANT_URL', 'value': qdrant_url}
+env_vars['QDRANT_API_KEY'] = {'name': 'QDRANT_API_KEY', 'value': qdrant_api_key}
+env_vars['OPENAI_FALLBACK_MODEL'] = {'name': 'OPENAI_FALLBACK_MODEL', 'value': 'gpt-4o-mini'}
 if not env_vars.get('SMTP_FROM_EMAIL', {}).get('value'):
     smtp_username = env_vars.get('SMTP_USERNAME', {}).get('value', '')
     if smtp_username:
@@ -194,6 +222,10 @@ if 'celery' in containers:
     celery_env['AWS_DEFAULT_REGION'] = {'name': 'AWS_DEFAULT_REGION', 'value': '$AWS_REGION'}
     celery_env['TEXTRACT_REGION'] = {'name': 'TEXTRACT_REGION', 'value': '$AWS_REGION'}
     celery_env['TEXTRACT_ASYNC_ENABLED'] = {'name': 'TEXTRACT_ASYNC_ENABLED', 'value': 'true'}
+    celery_env['QDRANT_ENABLED'] = {'name': 'QDRANT_ENABLED', 'value': 'true' if qdrant_url else 'false'}
+    celery_env['QDRANT_URL'] = {'name': 'QDRANT_URL', 'value': qdrant_url}
+    celery_env['QDRANT_API_KEY'] = {'name': 'QDRANT_API_KEY', 'value': qdrant_api_key}
+    celery_env['OPENAI_FALLBACK_MODEL'] = {'name': 'OPENAI_FALLBACK_MODEL', 'value': 'gpt-4o-mini'}
     if 'S3_BUCKET' in env_vars:
         celery_env['S3_BUCKET'] = env_vars['S3_BUCKET']
     containers['celery']['environment'] = list(celery_env.values())
